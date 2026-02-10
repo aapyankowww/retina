@@ -1,0 +1,18 @@
+PyQt5>=5.15
+numpy>=1.24
+opencv-python-headless>=4.8
+pandas>=2.0
+
+# Optional runtime for custom ONNX models
+onnxruntime>=1.16
+
+# Optional runtime for custom PyTorch .pt models
+torch>=2.2
+
+# Default pre-trained nuclei detector (CPU capable)
+stardist>=0.9
+csbdeep>=0.8
+tensorflow-cpu>=2.20
+
+# Optional alternative detector
+cellpose>=3.0
