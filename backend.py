@@ -27,7 +27,14 @@ _TORCH_IMPORT_ATTEMPTED = False
 StarDist2D = None
 _STARDIST_IMPORT_ATTEMPTED = False
 
+Cellpose = None
+_CELLPOSE_IMPORT_ATTEMPTED = False
+
 SUPPORTED_IMAGE_FORMATS = {".tif", ".tiff", ".png", ".jpg", ".jpeg"}
+DETECTOR_BACKENDS = (
+    "cellpose_nuclei",
+    "stardist",
+)
 STARDIST_PRETRAINED_MODELS = (
     "2D_versatile_he",
     "2D_versatile_fluo",
@@ -65,6 +72,7 @@ class LoadedModel:
 
 @dataclass
 class StarDistConfig:
+    detector_backend: str = "cellpose_nuclei"
     model_name: str = "2D_versatile_he"
     prob_thresh: float = 0.15
     nms_thresh: float = 0.55
@@ -83,6 +91,10 @@ class StarDistConfig:
     purple_v_max: int = 200
     min_purple_ratio: float = 0.20
     require_center_purple: bool = True
+    cellpose_model_type: str = "nuclei"
+    cellpose_diameter_px: float = 14.0
+    cellpose_flow_threshold: float = 0.40
+    cellpose_cellprob_threshold: float = -0.50
 
 
 class NucleiDetector:
@@ -94,6 +106,9 @@ class NucleiDetector:
         self._stardist_model = None
         self._stardist_model_name: str | None = None
         self._stardist_checked = False
+        self._cellpose_model = None
+        self._cellpose_model_type: str | None = None
+        self._cellpose_checked = False
 
     def load_model(self, model_path: str) -> None:
         path = Path(model_path)
@@ -148,6 +163,7 @@ class NucleiDetector:
     def get_detection_params(self) -> dict:
         cfg = self.stardist_config
         return {
+            "detector_backend": cfg.detector_backend,
             "model_name": cfg.model_name,
             "prob_thresh": cfg.prob_thresh,
             "nms_thresh": cfg.nms_thresh,
@@ -166,10 +182,22 @@ class NucleiDetector:
             "purple_v_max": cfg.purple_v_max,
             "min_purple_ratio": cfg.min_purple_ratio,
             "require_center_purple": cfg.require_center_purple,
+            "cellpose_model_type": cfg.cellpose_model_type,
+            "cellpose_diameter_px": cfg.cellpose_diameter_px,
+            "cellpose_flow_threshold": cfg.cellpose_flow_threshold,
+            "cellpose_cellprob_threshold": cfg.cellpose_cellprob_threshold,
         }
 
     def set_detection_params(self, params: dict) -> None:
         cfg = self.stardist_config
+        detector_backend = str(
+            params.get("detector_backend", cfg.detector_backend)
+        ).strip().lower()
+        if not detector_backend:
+            detector_backend = cfg.detector_backend
+        if detector_backend not in DETECTOR_BACKENDS:
+            raise ValueError("Выбранный встроенный детектор не поддерживается")
+
         new_model_name = str(params.get("model_name", cfg.model_name)).strip() or cfg.model_name
 
         prob_thresh = float(params.get("prob_thresh", cfg.prob_thresh))
@@ -196,6 +224,18 @@ class NucleiDetector:
         min_purple_ratio = float(params.get("min_purple_ratio", cfg.min_purple_ratio))
         require_center_purple = _to_bool(
             params.get("require_center_purple", cfg.require_center_purple)
+        )
+        cellpose_model_type = str(
+            params.get("cellpose_model_type", cfg.cellpose_model_type)
+        ).strip() or cfg.cellpose_model_type
+        cellpose_diameter_px = float(
+            params.get("cellpose_diameter_px", cfg.cellpose_diameter_px)
+        )
+        cellpose_flow_threshold = float(
+            params.get("cellpose_flow_threshold", cfg.cellpose_flow_threshold)
+        )
+        cellpose_cellprob_threshold = float(
+            params.get("cellpose_cellprob_threshold", cfg.cellpose_cellprob_threshold)
         )
 
         if not (0.0 <= prob_thresh <= 1.0):
@@ -232,8 +272,17 @@ class NucleiDetector:
             raise ValueError("Максимальная яркость должна быть в диапазоне [0, 255]")
         if not (0.0 <= min_purple_ratio <= 1.0):
             raise ValueError("Минимальная доля окрашенных пикселей должна быть в диапазоне [0, 1]")
+        if cellpose_diameter_px <= 0.0:
+            raise ValueError("Диаметр ядра для Cellpose должен быть больше 0")
+        if not (0.0 <= cellpose_flow_threshold <= 2.0):
+            raise ValueError("Порог потока Cellpose должен быть в диапазоне [0, 2]")
+        if not (-10.0 <= cellpose_cellprob_threshold <= 10.0):
+            raise ValueError("Порог вероятности маски Cellpose должен быть в диапазоне [-10, 10]")
 
+        old_backend = cfg.detector_backend
         old_model_name = cfg.model_name
+        old_cellpose_model_type = cfg.cellpose_model_type
+        cfg.detector_backend = detector_backend
         cfg.model_name = new_model_name
         cfg.prob_thresh = prob_thresh
         cfg.nms_thresh = nms_thresh
@@ -252,11 +301,21 @@ class NucleiDetector:
         cfg.purple_v_max = purple_v_max
         cfg.min_purple_ratio = min_purple_ratio
         cfg.require_center_purple = require_center_purple
+        cfg.cellpose_model_type = cellpose_model_type
+        cfg.cellpose_diameter_px = cellpose_diameter_px
+        cfg.cellpose_flow_threshold = cellpose_flow_threshold
+        cfg.cellpose_cellprob_threshold = cellpose_cellprob_threshold
 
         if old_model_name != new_model_name:
             self._stardist_model = None
             self._stardist_model_name = None
             self._stardist_checked = False
+        if old_backend != detector_backend:
+            self._cellpose_checked = False
+        if old_cellpose_model_type != cellpose_model_type:
+            self._cellpose_model = None
+            self._cellpose_model_type = None
+            self._cellpose_checked = False
 
     def detect_mask(self, image_bgr: np.ndarray) -> np.ndarray:
         nuclei = self.detect_nuclei_instances(image_bgr)
@@ -264,6 +323,9 @@ class NucleiDetector:
 
     def detect_nuclei_instances(self, image_bgr: np.ndarray) -> list[dict]:
         if self.loaded_model is None:
+            backend = str(self.stardist_config.detector_backend).strip().lower()
+            if backend == "cellpose_nuclei":
+                return self._cellpose_pretrained_instances(image_bgr)
             return self._default_pretrained_instances(image_bgr)
         return _extract_nuclei_from_binary_mask(self._model_mask(image_bgr))
 
@@ -392,6 +454,43 @@ class NucleiDetector:
         )
 
         nuclei = _extract_nuclei_from_label_image(np.asarray(labels).astype(np.int32, copy=False))
+        return self._postprocess_nuclei(nuclei, image_bgr)
+
+    def _cellpose_pretrained_instances(self, image_bgr: np.ndarray) -> list[dict]:
+        model = self._get_cellpose_model()
+        if model is None:
+            raise RuntimeError(
+                "Предобученная нейросеть Cellpose Nuclei недоступна. "
+                "Установите пакет cellpose или загрузите пользовательскую .pt/.onnx модель."
+            )
+
+        cfg = self.stardist_config
+        image_rgb = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB)
+        masks, *_ = model.eval(
+            image_rgb,
+            channels=[0, 0],
+            diameter=float(cfg.cellpose_diameter_px),
+            flow_threshold=float(cfg.cellpose_flow_threshold),
+            cellprob_threshold=float(cfg.cellpose_cellprob_threshold),
+            min_size=int(max(0, cfg.min_area_px)),
+            normalize=True,
+        )
+
+        labels = masks
+        if isinstance(labels, list):
+            if not labels:
+                return []
+            labels = labels[0]
+        labels = np.asarray(labels)
+        labels = np.squeeze(labels)
+        if labels.ndim != 2:
+            raise RuntimeError("Cellpose вернул результат неожиданной размерности")
+
+        nuclei = _extract_nuclei_from_label_image(labels.astype(np.int32, copy=False))
+        return self._postprocess_nuclei(nuclei, image_bgr)
+
+    def _postprocess_nuclei(self, nuclei: list[dict], image_bgr: np.ndarray) -> list[dict]:
+        cfg = self.stardist_config
         min_area = int(cfg.min_area_px)
         max_area = int(cfg.max_area_px)
 
@@ -441,6 +540,38 @@ class NucleiDetector:
             self._stardist_model_name = cfg.model_name
         return self._stardist_model
 
+    def _get_cellpose_model(self):
+        cfg = self.stardist_config
+
+        if (
+            self._cellpose_checked
+            and self._cellpose_model is not None
+            and self._cellpose_model_type == cfg.cellpose_model_type
+        ):
+            return self._cellpose_model
+        if (
+            self._cellpose_checked
+            and self._cellpose_model is None
+            and self._cellpose_model_type == cfg.cellpose_model_type
+        ):
+            return None
+
+        self._cellpose_checked = True
+        cellpose_cls = _get_cellpose_class()
+        if cellpose_cls is None:
+            self._cellpose_model = None
+            self._cellpose_model_type = cfg.cellpose_model_type
+            return None
+
+        try:
+            with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                self._cellpose_model = cellpose_cls(gpu=False, model_type=cfg.cellpose_model_type)
+            self._cellpose_model_type = cfg.cellpose_model_type
+        except Exception:
+            self._cellpose_model = None
+            self._cellpose_model_type = cfg.cellpose_model_type
+        return self._cellpose_model
+
     def _prepare_stardist_input(self, image_bgr: np.ndarray, n_channel_in: int) -> np.ndarray:
         cfg = self.stardist_config
         rgb = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB).astype(np.float32) / 255.0
@@ -470,6 +601,11 @@ def _is_stardist_package_available() -> bool:
     return importlib.util.find_spec("stardist") is not None
 
 
+@lru_cache(maxsize=1)
+def _is_cellpose_package_available() -> bool:
+    return importlib.util.find_spec("cellpose") is not None
+
+
 def _get_stardist_class():
     global StarDist2D, _STARDIST_IMPORT_ATTEMPTED
     if StarDist2D is not None:
@@ -484,6 +620,22 @@ def _get_stardist_class():
         return None
     StarDist2D = _StarDist2D
     return StarDist2D
+
+
+def _get_cellpose_class():
+    global Cellpose, _CELLPOSE_IMPORT_ATTEMPTED
+    if Cellpose is not None:
+        return Cellpose
+    if _CELLPOSE_IMPORT_ATTEMPTED:
+        return None
+
+    _CELLPOSE_IMPORT_ATTEMPTED = True
+    try:
+        from cellpose.models import Cellpose as _Cellpose  # type: ignore
+    except Exception:
+        return None
+    Cellpose = _Cellpose
+    return Cellpose
 
 
 def _get_onnxruntime_module():
@@ -618,14 +770,32 @@ def get_loaded_model_info() -> dict | None:
 
 def get_default_detector_info() -> dict:
     cfg = _detector.get_detection_params()
+    backend_name = str(cfg.get("detector_backend", "stardist")).strip().lower()
+    if backend_name == "cellpose_nuclei":
+        if _is_cellpose_package_available():
+            return {
+                "type": "pretrained",
+                "backend": backend_name,
+                "name": "Cellpose Nuclei",
+                "runtime": "pytorch-cpu",
+            }
+        return {
+            "type": "unavailable",
+            "backend": backend_name,
+            "name": "Cellpose Nuclei (недоступна)",
+            "runtime": "pytorch-cpu",
+        }
+
     if _is_stardist_package_available():
         return {
             "type": "pretrained",
+            "backend": "stardist",
             "name": f"StarDist ({cfg['model_name']})",
             "runtime": "tensorflow-cpu",
         }
     return {
         "type": "unavailable",
+        "backend": "stardist",
         "name": "StarDist (недоступна)",
         "runtime": "tensorflow-cpu",
     }
@@ -640,6 +810,17 @@ def warmup_pretrained_detector() -> None:
     """
     if _detector.loaded_model is not None:
         return
+    cfg = _detector.get_detection_params()
+    backend_name = str(cfg.get("detector_backend", "stardist")).strip().lower()
+    if backend_name == "cellpose_nuclei":
+        model = _detector._get_cellpose_model()
+        if model is None:
+            raise RuntimeError(
+                "Предобученная нейросеть Cellpose Nuclei недоступна. "
+                "Установите cellpose или загрузите .pt/.onnx модель."
+            )
+        return
+
     model = _detector._get_stardist_model()
     if model is None:
         raise RuntimeError(
@@ -736,6 +917,10 @@ def run_detection_job(payload: dict, event_queue) -> None:
 
 def get_pretrained_model_names() -> list[str]:
     return list(STARDIST_PRETRAINED_MODELS)
+
+
+def get_detector_backends() -> list[str]:
+    return list(DETECTOR_BACKENDS)
 
 
 def get_preprocess_modes() -> list[str]:
@@ -846,6 +1031,8 @@ def recommend_detection_params_by_cell(
     if p == "точный":
         prob_thresh = 0.15
         nms_thresh = 0.55
+        cellpose_flow_threshold = 0.50
+        cellpose_cellprob_threshold = -0.20
         min_area_px = int(max(8.0, round(area * 0.38)))
         max_area_px = int(round(area * 3.2))
         min_purple_ratio = 0.20
@@ -854,6 +1041,8 @@ def recommend_detection_params_by_cell(
     else:  # чувствительный
         prob_thresh = 0.15
         nms_thresh = 0.70
+        cellpose_flow_threshold = 0.30
+        cellpose_cellprob_threshold = -1.00
         min_area_px = int(max(6.0, round(area * 0.25)))
         max_area_px = int(round(area * 4.5))
         min_purple_ratio = 0.12
@@ -887,6 +1076,10 @@ def recommend_detection_params_by_cell(
             "purple_v_max": purple_v_max,
             "min_purple_ratio": min_purple_ratio,
             "require_center_purple": True,
+            "cellpose_model_type": "nuclei",
+            "cellpose_diameter_px": float(np.clip(d, 4.0, 90.0)),
+            "cellpose_flow_threshold": cellpose_flow_threshold,
+            "cellpose_cellprob_threshold": cellpose_cellprob_threshold,
         }
     )
     return params

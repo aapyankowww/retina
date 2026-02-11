@@ -73,6 +73,12 @@ PREPROCESS_MODE_LABELS_RU = {
 }
 PREPROCESS_MODE_KEYS_BY_LABEL_RU = {v: k for k, v in PREPROCESS_MODE_LABELS_RU.items()}
 
+DETECTOR_BACKEND_LABELS_RU = {
+    "cellpose_nuclei": "Cellpose Nuclei (рекомендуется для CPU)",
+    "stardist": "StarDist (классический вариант)",
+}
+DETECTOR_BACKEND_KEYS_BY_LABEL_RU = {v: k for k, v in DETECTOR_BACKEND_LABELS_RU.items()}
+
 
 def preprocess_mode_to_russian(mode_key: str) -> str:
     return PREPROCESS_MODE_LABELS_RU.get(mode_key, mode_key)
@@ -1251,11 +1257,29 @@ class DetectionParamsDialog(QDialog):
 
         self._base_params = backend.get_detection_params()
         self.params_result: dict | None = None
+        detector_backends = backend.get_detector_backends()
         model_names = backend.get_pretrained_model_names()
         preprocess_modes = backend.get_preprocess_modes()
 
         layout = QVBoxLayout(self)
         form = QFormLayout()
+
+        self.detector_backend_combo = QComboBox()
+        for backend_name in detector_backends:
+            self.detector_backend_combo.addItem(
+                DETECTOR_BACKEND_LABELS_RU.get(backend_name, backend_name),
+                backend_name,
+            )
+        current_backend = str(self._base_params.get("detector_backend", "cellpose_nuclei"))
+        backend_index = self.detector_backend_combo.findData(current_backend)
+        if backend_index < 0:
+            self.detector_backend_combo.addItem(
+                DETECTOR_BACKEND_LABELS_RU.get(current_backend, current_backend),
+                current_backend,
+            )
+            backend_index = self.detector_backend_combo.count() - 1
+        self.detector_backend_combo.setCurrentIndex(backend_index)
+        form.addRow("Встроенная модель:", self.detector_backend_combo)
 
         self.model_combo = QComboBox()
         self.model_combo.setEditable(True)
@@ -1322,6 +1346,42 @@ class DetectionParamsDialog(QDialog):
             current_mode_index = self.preprocess_combo.count() - 1
         self.preprocess_combo.setCurrentIndex(current_mode_index)
         form.addRow("Подготовка изображения:", self.preprocess_combo)
+
+        self.cellpose_model_combo = QComboBox()
+        self.cellpose_model_combo.setEditable(False)
+        self.cellpose_model_combo.addItem("nuclei", "nuclei")
+        current_cellpose_model = str(self._base_params.get("cellpose_model_type", "nuclei"))
+        cellpose_idx = self.cellpose_model_combo.findData(current_cellpose_model)
+        if cellpose_idx < 0:
+            self.cellpose_model_combo.addItem(current_cellpose_model, current_cellpose_model)
+            cellpose_idx = self.cellpose_model_combo.count() - 1
+        self.cellpose_model_combo.setCurrentIndex(cellpose_idx)
+        form.addRow("Модель Cellpose:", self.cellpose_model_combo)
+
+        self.cellpose_diameter_spin = QDoubleSpinBox()
+        self.cellpose_diameter_spin.setDecimals(1)
+        self.cellpose_diameter_spin.setRange(1.0, 200.0)
+        self.cellpose_diameter_spin.setSingleStep(0.5)
+        self.cellpose_diameter_spin.setValue(float(self._base_params.get("cellpose_diameter_px", 14.0)))
+        form.addRow("Оценка диаметра ядра (пикс):", self.cellpose_diameter_spin)
+
+        self.cellpose_flow_spin = QDoubleSpinBox()
+        self.cellpose_flow_spin.setDecimals(2)
+        self.cellpose_flow_spin.setRange(0.0, 2.0)
+        self.cellpose_flow_spin.setSingleStep(0.05)
+        self.cellpose_flow_spin.setValue(
+            float(self._base_params.get("cellpose_flow_threshold", 0.40))
+        )
+        form.addRow("Cellpose: порог потока:", self.cellpose_flow_spin)
+
+        self.cellpose_cellprob_spin = QDoubleSpinBox()
+        self.cellpose_cellprob_spin.setDecimals(2)
+        self.cellpose_cellprob_spin.setRange(-10.0, 10.0)
+        self.cellpose_cellprob_spin.setSingleStep(0.1)
+        self.cellpose_cellprob_spin.setValue(
+            float(self._base_params.get("cellpose_cellprob_threshold", -0.50))
+        )
+        form.addRow("Cellpose: порог вероятности маски:", self.cellpose_cellprob_spin)
 
         self.norm_low_spin = QDoubleSpinBox()
         self.norm_low_spin.setDecimals(2)
@@ -1398,9 +1458,11 @@ class DetectionParamsDialog(QDialog):
         layout.addWidget(buttons)
 
         self.purple_filter_check.toggled.connect(self._toggle_purple_controls)
+        self.detector_backend_combo.currentIndexChanged.connect(self._toggle_detector_controls)
         self.btn_preset_precise.clicked.connect(self._apply_precision_preset)
         self.btn_preset_sensitive.clicked.connect(self._apply_sensitive_preset)
         self._toggle_purple_controls(self.purple_filter_check.isChecked())
+        self._toggle_detector_controls()
 
     def _toggle_purple_controls(self, enabled: bool) -> None:
         for widget in [
@@ -1412,6 +1474,37 @@ class DetectionParamsDialog(QDialog):
             self.min_ratio_spin,
         ]:
             widget.setEnabled(enabled)
+
+    def _toggle_detector_controls(self, *_args) -> None:
+        backend_name = self.detector_backend_combo.currentData()
+        if backend_name is None:
+            backend_name = DETECTOR_BACKEND_KEYS_BY_LABEL_RU.get(
+                self.detector_backend_combo.currentText().strip(),
+                "cellpose_nuclei",
+            )
+        backend_name = str(backend_name).strip().lower()
+        use_stardist = backend_name == "stardist"
+
+        for widget in [
+            self.model_combo,
+            self.prob_spin,
+            self.nms_spin,
+            self.scale_spin,
+            self.tiles_x_spin,
+            self.tiles_y_spin,
+            self.preprocess_combo,
+            self.norm_low_spin,
+            self.norm_high_spin,
+        ]:
+            widget.setEnabled(use_stardist)
+
+        for widget in [
+            self.cellpose_model_combo,
+            self.cellpose_diameter_spin,
+            self.cellpose_flow_spin,
+            self.cellpose_cellprob_spin,
+        ]:
+            widget.setEnabled(not use_stardist)
 
     def _apply_precision_preset(self) -> None:
         self.model_combo.setCurrentText("2D_versatile_he")
@@ -1434,6 +1527,9 @@ class DetectionParamsDialog(QDialog):
         self.sat_min_spin.setValue(42)
         self.val_max_spin.setValue(200)
         self.min_ratio_spin.setValue(0.20)
+        self.cellpose_model_combo.setCurrentIndex(max(0, self.cellpose_model_combo.findData("nuclei")))
+        self.cellpose_flow_spin.setValue(0.50)
+        self.cellpose_cellprob_spin.setValue(-0.20)
 
     def _apply_sensitive_preset(self) -> None:
         self.model_combo.setCurrentText("2D_versatile_he")
@@ -1456,15 +1552,28 @@ class DetectionParamsDialog(QDialog):
         self.sat_min_spin.setValue(30)
         self.val_max_spin.setValue(215)
         self.min_ratio_spin.setValue(0.12)
+        self.cellpose_model_combo.setCurrentIndex(max(0, self.cellpose_model_combo.findData("nuclei")))
+        self.cellpose_flow_spin.setValue(0.30)
+        self.cellpose_cellprob_spin.setValue(-1.00)
 
     def _collect_params(self) -> dict:
+        detector_backend = self.detector_backend_combo.currentData()
+        if detector_backend is None:
+            detector_backend = DETECTOR_BACKEND_KEYS_BY_LABEL_RU.get(
+                self.detector_backend_combo.currentText().strip(),
+                "cellpose_nuclei",
+            )
         preprocess_mode = self.preprocess_combo.currentData()
         if preprocess_mode is None:
             preprocess_mode = PREPROCESS_MODE_KEYS_BY_LABEL_RU.get(
                 self.preprocess_combo.currentText().strip(),
                 "rgb",
             )
+        cellpose_model_type = self.cellpose_model_combo.currentData()
+        if cellpose_model_type is None:
+            cellpose_model_type = self.cellpose_model_combo.currentText().strip() or "nuclei"
         return {
+            "detector_backend": str(detector_backend).strip(),
             "model_name": str(self.model_combo.currentText()).strip() or "2D_versatile_he",
             "prob_thresh": float(self.prob_spin.value()),
             "nms_thresh": float(self.nms_spin.value()),
@@ -1483,6 +1592,10 @@ class DetectionParamsDialog(QDialog):
             "purple_v_max": int(self.val_max_spin.value()),
             "min_purple_ratio": float(self.min_ratio_spin.value()),
             "require_center_purple": bool(self.center_purple_check.isChecked()),
+            "cellpose_model_type": str(cellpose_model_type).strip() or "nuclei",
+            "cellpose_diameter_px": float(self.cellpose_diameter_spin.value()),
+            "cellpose_flow_threshold": float(self.cellpose_flow_spin.value()),
+            "cellpose_cellprob_threshold": float(self.cellpose_cellprob_spin.value()),
         }
 
     def accept(self) -> None:
@@ -2861,11 +2974,13 @@ class MainWindow(QMainWindow):
         if backend.get_loaded_model_info() is None:
             default_info = backend.get_default_detector_info()
             if default_info.get("type") == "unavailable":
+                detector_name = str(default_info.get("name", "встроенная модель"))
                 QMessageBox.warning(
                     self,
                     "Нейросеть недоступна",
-                    "Предобученная модель StarDist недоступна. "
-                    "Установите stardist/tensorflow-cpu или загрузите .pt/.onnx модель.",
+                    f"{detector_name} недоступна. "
+                    "Установите зависимости для выбранной встроенной модели "
+                    "или загрузите .pt/.onnx модель.",
                 )
                 return
             if self.cell_diameter_px is None:
@@ -3066,6 +3181,15 @@ class MainWindow(QMainWindow):
 
         default_info = backend.get_default_detector_info()
         params = backend.get_detection_params()
+        backend_name = str(params.get("detector_backend", "stardist")).strip().lower()
+        if backend_name == "cellpose_nuclei":
+            self.detector_label.setText(
+                f"Детектор: {default_info['name']} | flow {float(params.get('cellpose_flow_threshold', 0.4)):.2f} "
+                f"| mask {float(params.get('cellpose_cellprob_threshold', -0.5)):.2f} "
+                f"| диам. {float(params.get('cellpose_diameter_px', 14.0)):.1f}px"
+            )
+            return
+
         mode_ru = preprocess_mode_to_russian(str(params.get("preprocess_mode", "")))
         self.detector_label.setText(
             f"Детектор: {default_info['name']} | увер. {params['prob_thresh']:.2f} "
