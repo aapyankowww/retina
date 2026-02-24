@@ -54,6 +54,49 @@ DEFAULT_ENHANCEMENT_PARAMS = {
     "contrast": 1.0,
     "sharpness": 1.0,
 }
+DETECTION_RUNTIME_PRESETS = (
+    "legacy",
+    "balanced",
+    "high_recall",
+)
+DETECTION_RUNTIME_PRESET_VALUES = {
+    "legacy": {
+        "purple_filter_enabled": True,
+        "strict_purple_filter": True,
+        "require_center_purple": True,
+        "min_purple_ratio": 0.20,
+        "purple_s_min": 45,
+        "purple_v_max": 200,
+        "prob_thresh": 0.15,
+        "nms_thresh": 0.55,
+        "min_area_px": 18,
+        "scale": 1.0,
+    },
+    "balanced": {
+        "purple_filter_enabled": True,
+        "strict_purple_filter": False,
+        "require_center_purple": False,
+        "min_purple_ratio": 0.10,
+        "purple_s_min": 30,
+        "purple_v_max": 255,
+        "prob_thresh": 0.10,
+        "nms_thresh": 0.40,
+        "min_area_px": 10,
+        "scale": 1.0,
+    },
+    "high_recall": {
+        "purple_filter_enabled": False,
+        "strict_purple_filter": False,
+        "require_center_purple": False,
+        "min_purple_ratio": 0.05,
+        "purple_s_min": 15,
+        "purple_v_max": 255,
+        "prob_thresh": 0.08,
+        "nms_thresh": 0.35,
+        "min_area_px": 0,
+        "scale": 1.0,
+    },
+}
 
 
 class ModelValidationError(ValueError):
@@ -91,10 +134,27 @@ class StarDistConfig:
     purple_v_max: int = 200
     min_purple_ratio: float = 0.20
     require_center_purple: bool = True
+    strict_purple_filter: bool = True
     cellpose_model_type: str = "nuclei"
     cellpose_diameter_px: float = 14.0
     cellpose_flow_threshold: float = 0.40
     cellpose_cellprob_threshold: float = -0.50
+
+
+def normalize_runtime_preset_name(preset_name: str) -> str:
+    key = str(preset_name).strip().lower()
+    if key not in DETECTION_RUNTIME_PRESETS:
+        raise ValueError(
+            f"Неизвестный runtime-пресет: {preset_name}. "
+            f"Доступно: {', '.join(DETECTION_RUNTIME_PRESETS)}"
+        )
+    return key
+
+
+def get_runtime_preset_values(preset_name: str) -> dict:
+    key = normalize_runtime_preset_name(preset_name)
+    values = DETECTION_RUNTIME_PRESET_VALUES.get(key, {})
+    return dict(values)
 
 
 class NucleiDetector:
@@ -182,6 +242,7 @@ class NucleiDetector:
             "purple_v_max": cfg.purple_v_max,
             "min_purple_ratio": cfg.min_purple_ratio,
             "require_center_purple": cfg.require_center_purple,
+            "strict_purple_filter": cfg.strict_purple_filter,
             "cellpose_model_type": cfg.cellpose_model_type,
             "cellpose_diameter_px": cfg.cellpose_diameter_px,
             "cellpose_flow_threshold": cfg.cellpose_flow_threshold,
@@ -190,52 +251,62 @@ class NucleiDetector:
 
     def set_detection_params(self, params: dict) -> None:
         cfg = self.stardist_config
+        incoming = dict(params or {})
+        preset_name = str(incoming.pop("preset", "")).strip()
+        if preset_name:
+            preset_values = get_runtime_preset_values(preset_name)
+            preset_values.update(incoming)
+            incoming = preset_values
+
         detector_backend = str(
-            params.get("detector_backend", cfg.detector_backend)
+            incoming.get("detector_backend", cfg.detector_backend)
         ).strip().lower()
         if not detector_backend:
             detector_backend = cfg.detector_backend
         if detector_backend not in DETECTOR_BACKENDS:
             raise ValueError("Выбранный встроенный детектор не поддерживается")
 
-        new_model_name = str(params.get("model_name", cfg.model_name)).strip() or cfg.model_name
+        new_model_name = str(incoming.get("model_name", cfg.model_name)).strip() or cfg.model_name
 
-        prob_thresh = float(params.get("prob_thresh", cfg.prob_thresh))
-        nms_thresh = float(params.get("nms_thresh", cfg.nms_thresh))
-        scale = float(params.get("scale", cfg.scale))
-        min_area_px = int(params.get("min_area_px", cfg.min_area_px))
-        max_area_px = int(params.get("max_area_px", cfg.max_area_px))
-        n_tiles_x = int(params.get("n_tiles_x", cfg.n_tiles_x))
-        n_tiles_y = int(params.get("n_tiles_y", cfg.n_tiles_y))
-        preprocess_mode = str(params.get("preprocess_mode", cfg.preprocess_mode)).strip().lower()
+        prob_thresh = float(incoming.get("prob_thresh", cfg.prob_thresh))
+        nms_thresh = float(incoming.get("nms_thresh", cfg.nms_thresh))
+        scale = float(incoming.get("scale", cfg.scale))
+        min_area_px = int(incoming.get("min_area_px", cfg.min_area_px))
+        max_area_px = int(incoming.get("max_area_px", cfg.max_area_px))
+        n_tiles_x = int(incoming.get("n_tiles_x", cfg.n_tiles_x))
+        n_tiles_y = int(incoming.get("n_tiles_y", cfg.n_tiles_y))
+        preprocess_mode = str(incoming.get("preprocess_mode", cfg.preprocess_mode)).strip().lower()
         if not preprocess_mode:
             preprocess_mode = cfg.preprocess_mode
 
-        norm_p_low = float(params.get("norm_p_low", cfg.norm_p_low))
-        norm_p_high = float(params.get("norm_p_high", cfg.norm_p_high))
+        norm_p_low = float(incoming.get("norm_p_low", cfg.norm_p_low))
+        norm_p_high = float(incoming.get("norm_p_high", cfg.norm_p_high))
 
         purple_filter_enabled = _to_bool(
-            params.get("purple_filter_enabled", cfg.purple_filter_enabled)
+            incoming.get("purple_filter_enabled", cfg.purple_filter_enabled)
         )
-        purple_h_min = int(params.get("purple_h_min", cfg.purple_h_min))
-        purple_h_max = int(params.get("purple_h_max", cfg.purple_h_max))
-        purple_s_min = int(params.get("purple_s_min", cfg.purple_s_min))
-        purple_v_max = int(params.get("purple_v_max", cfg.purple_v_max))
-        min_purple_ratio = float(params.get("min_purple_ratio", cfg.min_purple_ratio))
+        purple_h_min = int(incoming.get("purple_h_min", cfg.purple_h_min))
+        purple_h_max = int(incoming.get("purple_h_max", cfg.purple_h_max))
+        purple_s_min = int(incoming.get("purple_s_min", cfg.purple_s_min))
+        purple_v_max = int(incoming.get("purple_v_max", cfg.purple_v_max))
+        min_purple_ratio = float(incoming.get("min_purple_ratio", cfg.min_purple_ratio))
         require_center_purple = _to_bool(
-            params.get("require_center_purple", cfg.require_center_purple)
+            incoming.get("require_center_purple", cfg.require_center_purple)
+        )
+        strict_purple_filter = _to_bool(
+            incoming.get("strict_purple_filter", cfg.strict_purple_filter)
         )
         cellpose_model_type = str(
-            params.get("cellpose_model_type", cfg.cellpose_model_type)
+            incoming.get("cellpose_model_type", cfg.cellpose_model_type)
         ).strip() or cfg.cellpose_model_type
         cellpose_diameter_px = float(
-            params.get("cellpose_diameter_px", cfg.cellpose_diameter_px)
+            incoming.get("cellpose_diameter_px", cfg.cellpose_diameter_px)
         )
         cellpose_flow_threshold = float(
-            params.get("cellpose_flow_threshold", cfg.cellpose_flow_threshold)
+            incoming.get("cellpose_flow_threshold", cfg.cellpose_flow_threshold)
         )
         cellpose_cellprob_threshold = float(
-            params.get("cellpose_cellprob_threshold", cfg.cellpose_cellprob_threshold)
+            incoming.get("cellpose_cellprob_threshold", cfg.cellpose_cellprob_threshold)
         )
 
         if not (0.0 <= prob_thresh <= 1.0):
@@ -301,6 +372,7 @@ class NucleiDetector:
         cfg.purple_v_max = purple_v_max
         cfg.min_purple_ratio = min_purple_ratio
         cfg.require_center_purple = require_center_purple
+        cfg.strict_purple_filter = strict_purple_filter
         cfg.cellpose_model_type = cellpose_model_type
         cfg.cellpose_diameter_px = cellpose_diameter_px
         cfg.cellpose_flow_threshold = cellpose_flow_threshold
@@ -322,12 +394,37 @@ class NucleiDetector:
         return _nuclei_to_binary_mask(nuclei, image_bgr.shape[:2])
 
     def detect_nuclei_instances(self, image_bgr: np.ndarray) -> list[dict]:
+        nuclei, _ = self.detect_nuclei_instances_with_diagnostics(image_bgr)
+        return nuclei
+
+    def detect_nuclei_instances_with_diagnostics(
+        self,
+        image_bgr: np.ndarray,
+        area_small_px: float = 15.0,
+        area_large_px: float = 2000.0,
+    ) -> tuple[list[dict], dict]:
+        diagnostics = _build_detection_diagnostics_template(area_small_px, area_large_px)
         if self.loaded_model is None:
             backend = str(self.stardist_config.detector_backend).strip().lower()
+            diagnostics["backend"] = backend
             if backend == "cellpose_nuclei":
-                return self._cellpose_pretrained_instances(image_bgr)
-            return self._default_pretrained_instances(image_bgr)
-        return _extract_nuclei_from_binary_mask(self._model_mask(image_bgr))
+                nuclei = self._cellpose_pretrained_instances(image_bgr, diagnostics=diagnostics)
+            else:
+                nuclei = self._default_pretrained_instances(image_bgr, diagnostics=diagnostics)
+        else:
+            diagnostics["backend"] = "custom_model"
+            nuclei_raw = _extract_nuclei_from_binary_mask(self._model_mask(image_bgr))
+            diagnostics["model_candidates_before_nms"] = None
+            diagnostics["after_nms_count"] = int(len(nuclei_raw))
+            nuclei = self._postprocess_nuclei(nuclei_raw, image_bgr, diagnostics=diagnostics)
+
+        diagnostics["final_count"] = int(len(nuclei))
+        diagnostics["final_area_stats"] = _summarize_nuclei_areas(
+            nuclei,
+            small_area_px=float(diagnostics["small_area_threshold_px"]),
+            large_area_px=float(diagnostics["large_area_threshold_px"]),
+        )
+        return nuclei, diagnostics
 
     def _preprocess_patch(self, image_bgr_patch: np.ndarray) -> np.ndarray:
         image_rgb = cv2.cvtColor(image_bgr_patch, cv2.COLOR_BGR2RGB)
@@ -426,7 +523,11 @@ class NucleiDetector:
         kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
         return cv2.morphologyEx(binary, cv2.MORPH_OPEN, kernel)
 
-    def _default_pretrained_instances(self, image_bgr: np.ndarray) -> list[dict]:
+    def _default_pretrained_instances(
+        self,
+        image_bgr: np.ndarray,
+        diagnostics: dict | None = None,
+    ) -> list[dict]:
         model = self._get_stardist_model()
         if model is None:
             raise RuntimeError(
@@ -443,7 +544,7 @@ class NucleiDetector:
         else:
             n_tiles = (int(cfg.n_tiles_y), int(cfg.n_tiles_x), 1)
 
-        labels, _ = model.predict_instances(
+        labels, details = model.predict_instances(
             model_input,
             prob_thresh=float(cfg.prob_thresh),
             nms_thresh=float(cfg.nms_thresh),
@@ -454,9 +555,16 @@ class NucleiDetector:
         )
 
         nuclei = _extract_nuclei_from_label_image(np.asarray(labels).astype(np.int32, copy=False))
-        return self._postprocess_nuclei(nuclei, image_bgr)
+        if diagnostics is not None:
+            diagnostics["model_candidates_before_nms"] = _extract_model_candidate_count(details)
+            diagnostics["after_nms_count"] = int(len(nuclei))
+        return self._postprocess_nuclei(nuclei, image_bgr, diagnostics=diagnostics)
 
-    def _cellpose_pretrained_instances(self, image_bgr: np.ndarray) -> list[dict]:
+    def _cellpose_pretrained_instances(
+        self,
+        image_bgr: np.ndarray,
+        diagnostics: dict | None = None,
+    ) -> list[dict]:
         model = self._get_cellpose_model()
         if model is None:
             raise RuntimeError(
@@ -487,9 +595,17 @@ class NucleiDetector:
             raise RuntimeError("Cellpose вернул результат неожиданной размерности")
 
         nuclei = _extract_nuclei_from_label_image(labels.astype(np.int32, copy=False))
-        return self._postprocess_nuclei(nuclei, image_bgr)
+        if diagnostics is not None:
+            diagnostics["model_candidates_before_nms"] = int(len(nuclei))
+            diagnostics["after_nms_count"] = int(len(nuclei))
+        return self._postprocess_nuclei(nuclei, image_bgr, diagnostics=diagnostics)
 
-    def _postprocess_nuclei(self, nuclei: list[dict], image_bgr: np.ndarray) -> list[dict]:
+    def _postprocess_nuclei(
+        self,
+        nuclei: list[dict],
+        image_bgr: np.ndarray,
+        diagnostics: dict | None = None,
+    ) -> list[dict]:
         cfg = self.stardist_config
         min_area = int(cfg.min_area_px)
         max_area = int(cfg.max_area_px)
@@ -498,13 +614,19 @@ class NucleiDetector:
         for nucleus in nuclei:
             area = float(nucleus.get("area_px", 0.0))
             if min_area > 0 and area < min_area:
+                if diagnostics is not None:
+                    diagnostics["removed_by_min_area"] += 1
                 continue
             if max_area > 0 and area > max_area:
+                if diagnostics is not None:
+                    diagnostics["removed_by_max_area"] += 1
                 continue
             filtered.append(nucleus)
+        if diagnostics is not None:
+            diagnostics["after_area_filters_count"] = int(len(filtered))
 
         if cfg.purple_filter_enabled:
-            filtered = _filter_nuclei_by_purple_stain(
+            filtered, purple_stats = _filter_nuclei_by_purple_stain(
                 filtered,
                 image_bgr,
                 hue_min=int(cfg.purple_h_min),
@@ -513,7 +635,24 @@ class NucleiDetector:
                 val_max=int(cfg.purple_v_max),
                 min_ratio=float(cfg.min_purple_ratio),
                 require_center=bool(cfg.require_center_purple),
+                strict=bool(cfg.strict_purple_filter),
             )
+            if diagnostics is not None:
+                diagnostics["purple_filter_enabled"] = True
+                diagnostics["strict_purple_filter"] = bool(cfg.strict_purple_filter)
+                diagnostics["purple_checked"] = int(purple_stats.get("checked", 0))
+                diagnostics["removed_by_purple_ratio"] = int(purple_stats.get("failed_ratio", 0))
+                diagnostics["removed_by_purple_center"] = int(purple_stats.get("failed_center", 0))
+                diagnostics["removed_by_purple_other"] = int(purple_stats.get("failed_other", 0))
+                diagnostics["removed_by_purple_total"] = int(purple_stats.get("rejected", 0))
+                diagnostics["weak_color_marked"] = int(purple_stats.get("weak_marked", 0))
+        elif diagnostics is not None:
+            diagnostics["purple_filter_enabled"] = False
+            diagnostics["strict_purple_filter"] = bool(cfg.strict_purple_filter)
+
+        if diagnostics is not None:
+            diagnostics["after_purple_count"] = int(len(filtered))
+
         return filtered
 
     def _get_stardist_model(self):
@@ -931,6 +1070,16 @@ def get_detection_presets() -> list[str]:
     return list(DETECTION_PRESETS)
 
 
+def get_runtime_detection_presets() -> list[str]:
+    return list(DETECTION_RUNTIME_PRESETS)
+
+
+def build_detection_params_for_preset(preset_name: str) -> dict:
+    params = get_detection_params()
+    params.update(get_runtime_preset_values(preset_name))
+    return params
+
+
 def get_detection_params() -> dict:
     return _detector.get_detection_params()
 
@@ -1076,6 +1225,7 @@ def recommend_detection_params_by_cell(
             "purple_v_max": purple_v_max,
             "min_purple_ratio": min_purple_ratio,
             "require_center_purple": True,
+            "strict_purple_filter": True,
             "cellpose_model_type": "nuclei",
             "cellpose_diameter_px": float(np.clip(d, 4.0, 90.0)),
             "cellpose_flow_threshold": cellpose_flow_threshold,
@@ -1198,6 +1348,7 @@ def _derive_color_thresholds_from_selection(
         "min_purple_ratio": min_ratio,
         "purple_filter_enabled": True,
         "require_center_purple": True,
+        "strict_purple_filter": True,
     }
 
 
@@ -1341,6 +1492,108 @@ def _hue_in_range(h_channel: np.ndarray, hue_min: int, hue_max: int) -> np.ndarr
     return (h_channel >= hue_min) | (h_channel <= hue_max)
 
 
+def _build_detection_diagnostics_template(area_small_px: float, area_large_px: float) -> dict:
+    small = float(max(0.0, area_small_px))
+    large = float(max(small, area_large_px))
+    return {
+        "backend": "",
+        "model_candidates_before_nms": None,
+        "after_nms_count": 0,
+        "removed_by_min_area": 0,
+        "removed_by_max_area": 0,
+        "after_area_filters_count": 0,
+        "purple_filter_enabled": False,
+        "strict_purple_filter": True,
+        "purple_checked": 0,
+        "removed_by_purple_ratio": 0,
+        "removed_by_purple_center": 0,
+        "removed_by_purple_other": 0,
+        "removed_by_purple_total": 0,
+        "weak_color_marked": 0,
+        "after_purple_count": 0,
+        "final_count": 0,
+        "small_area_threshold_px": small,
+        "large_area_threshold_px": large,
+        "final_area_stats": {},
+    }
+
+
+def _extract_model_candidate_count(details) -> int | None:
+    if not isinstance(details, dict):
+        return None
+
+    direct_keys = (
+        "num_candidates_before_nms",
+        "n_candidates_before_nms",
+        "candidates_before_nms",
+        "before_nms_count",
+    )
+    for key in direct_keys:
+        value = details.get(key)
+        if value is None:
+            continue
+        try:
+            return int(value)
+        except Exception:
+            continue
+
+    array_keys = (
+        "points_before_nms",
+        "points_raw",
+        "candidates_raw",
+    )
+    for key in array_keys:
+        value = details.get(key)
+        if value is None:
+            continue
+        try:
+            return int(len(value))
+        except Exception:
+            continue
+    return None
+
+
+def _summarize_nuclei_areas(
+    nuclei: list[dict],
+    small_area_px: float,
+    large_area_px: float,
+) -> dict:
+    if not nuclei:
+        return {
+            "count": 0,
+            "min": 0.0,
+            "median": 0.0,
+            "mean": 0.0,
+            "max": 0.0,
+            "pct_small": 0.0,
+            "pct_large": 0.0,
+        }
+
+    areas = np.asarray([float(x.get("area_px", 0.0)) for x in nuclei], dtype=np.float32)
+    if areas.size == 0:
+        return {
+            "count": 0,
+            "min": 0.0,
+            "median": 0.0,
+            "mean": 0.0,
+            "max": 0.0,
+            "pct_small": 0.0,
+            "pct_large": 0.0,
+        }
+
+    small_thr = float(max(0.0, small_area_px))
+    large_thr = float(max(small_thr, large_area_px))
+    return {
+        "count": int(areas.size),
+        "min": float(np.min(areas)),
+        "median": float(np.median(areas)),
+        "mean": float(np.mean(areas)),
+        "max": float(np.max(areas)),
+        "pct_small": float(np.mean(areas < small_thr)),
+        "pct_large": float(np.mean(areas > large_thr)),
+    }
+
+
 def _filter_nuclei_by_purple_stain(
     nuclei: list[dict],
     image_bgr: np.ndarray,
@@ -1350,76 +1603,116 @@ def _filter_nuclei_by_purple_stain(
     val_max: int,
     min_ratio: float,
     require_center: bool,
-) -> list[dict]:
+    strict: bool = True,
+) -> tuple[list[dict], dict]:
+    stats = {
+        "checked": 0,
+        "failed_ratio": 0,
+        "failed_center": 0,
+        "failed_other": 0,
+        "rejected": 0,
+        "weak_marked": 0,
+    }
     if not nuclei:
-        return nuclei
+        return nuclei, stats
 
     hsv = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2HSV)
     h_channel, s_channel, v_channel = cv2.split(hsv)
     img_h, img_w = image_bgr.shape[:2]
+    strict = bool(strict)
 
     kept: list[dict] = []
     for nucleus in nuclei:
+        stats["checked"] += 1
+        failure_reason = ""
         contour = nucleus.get("contour", [])
         if len(contour) < 3:
+            failure_reason = "other"
+        else:
+            contour_arr = np.asarray(contour, dtype=np.float32).reshape((-1, 1, 2))
+            contour_int = np.round(contour_arr).astype(np.int32)
+            contour_int[:, 0, 0] = np.clip(contour_int[:, 0, 0], 0, img_w - 1)
+            contour_int[:, 0, 1] = np.clip(contour_int[:, 0, 1], 0, img_h - 1)
+
+            x, y, w, h = cv2.boundingRect(contour_int)
+            if w <= 0 or h <= 0:
+                failure_reason = "other"
+            else:
+                local_mask = np.zeros((h, w), dtype=np.uint8)
+                shifted = contour_int.copy()
+                shifted[:, 0, 0] -= x
+                shifted[:, 0, 1] -= y
+                cv2.drawContours(local_mask, [shifted], -1, 255, thickness=cv2.FILLED)
+
+                inside = local_mask > 0
+                area = int(np.count_nonzero(inside))
+                if area == 0:
+                    failure_reason = "other"
+                else:
+                    local_h = h_channel[y : y + h, x : x + w]
+                    local_s = s_channel[y : y + h, x : x + w]
+                    local_v = v_channel[y : y + h, x : x + w]
+
+                    purple_mask = (
+                        _hue_in_range(local_h, hue_min, hue_max)
+                        & (local_s >= sat_min)
+                        & (local_v <= val_max)
+                    )
+                    purple_ratio = float(np.count_nonzero(purple_mask & inside)) / float(area)
+                    if purple_ratio < min_ratio:
+                        failure_reason = "ratio"
+                    elif require_center:
+                        center = nucleus.get("center")
+                        if center is None:
+                            failure_reason = "center"
+                        else:
+                            cx = int(round(float(center[0])))
+                            cy = int(round(float(center[1])))
+                            cx = int(np.clip(cx, 0, img_w - 1))
+                            cy = int(np.clip(cy, 0, img_h - 1))
+
+                            center_h = int(h_channel[cy, cx])
+                            center_s = int(s_channel[cy, cx])
+                            center_v = int(v_channel[cy, cx])
+                            center_is_purple = (
+                                bool(_hue_in_range(np.asarray([[center_h]]), hue_min, hue_max)[0, 0])
+                                and center_s >= sat_min
+                                and center_v <= val_max
+                            )
+                            if not center_is_purple:
+                                failure_reason = "center"
+
+        if not failure_reason:
+            kept.append(nucleus)
             continue
 
-        contour_arr = np.asarray(contour, dtype=np.float32).reshape((-1, 1, 2))
-        contour_int = np.round(contour_arr).astype(np.int32)
-        contour_int[:, 0, 0] = np.clip(contour_int[:, 0, 0], 0, img_w - 1)
-        contour_int[:, 0, 1] = np.clip(contour_int[:, 0, 1], 0, img_h - 1)
+        if failure_reason == "ratio":
+            stats["failed_ratio"] += 1
+        elif failure_reason == "center":
+            stats["failed_center"] += 1
+        else:
+            stats["failed_other"] += 1
 
-        x, y, w, h = cv2.boundingRect(contour_int)
-        if w <= 0 or h <= 0:
+        if strict:
+            stats["rejected"] += 1
             continue
 
-        local_mask = np.zeros((h, w), dtype=np.uint8)
-        shifted = contour_int.copy()
-        shifted[:, 0, 0] -= x
-        shifted[:, 0, 1] -= y
-        cv2.drawContours(local_mask, [shifted], -1, 255, thickness=cv2.FILLED)
+        marked = dict(nucleus)
+        marked["weak_color"] = True
+        marked["purple_filter_passed"] = False
+        kept.append(marked)
+        stats["weak_marked"] += 1
 
-        inside = local_mask > 0
-        area = int(np.count_nonzero(inside))
-        if area == 0:
-            continue
-
-        local_h = h_channel[y : y + h, x : x + w]
-        local_s = s_channel[y : y + h, x : x + w]
-        local_v = v_channel[y : y + h, x : x + w]
-
-        purple_mask = (
-            _hue_in_range(local_h, hue_min, hue_max)
-            & (local_s >= sat_min)
-            & (local_v <= val_max)
-        )
-        purple_ratio = float(np.count_nonzero(purple_mask & inside)) / float(area)
-        if purple_ratio < min_ratio:
-            continue
-
-        if require_center:
-            center = nucleus.get("center")
-            if center is None:
+    if not strict:
+        for idx, nucleus in enumerate(kept):
+            if bool(nucleus.get("weak_color", False)):
                 continue
-            cx = int(round(float(center[0])))
-            cy = int(round(float(center[1])))
-            cx = int(np.clip(cx, 0, img_w - 1))
-            cy = int(np.clip(cy, 0, img_h - 1))
+            clean = dict(nucleus)
+            clean["weak_color"] = False
+            clean["purple_filter_passed"] = True
+            kept[idx] = clean
 
-            center_h = int(h_channel[cy, cx])
-            center_s = int(s_channel[cy, cx])
-            center_v = int(v_channel[cy, cx])
-            center_is_purple = (
-                bool(_hue_in_range(np.asarray([[center_h]]), hue_min, hue_max)[0, 0])
-                and center_s >= sat_min
-                and center_v <= val_max
-            )
-            if not center_is_purple:
-                continue
-
-        kept.append(nucleus)
-
-    return kept
+    return kept, stats
 
 
 def detect_nuclei_in_image(
@@ -1428,6 +1721,20 @@ def detect_nuclei_in_image(
 ) -> list[dict]:
     enhanced = apply_image_enhancement(image_bgr, enhancement_params)
     return _detector.detect_nuclei_instances(enhanced)
+
+
+def detect_nuclei_in_image_with_diagnostics(
+    image_bgr: np.ndarray,
+    enhancement_params: dict | None = None,
+    area_small_px: float = 15.0,
+    area_large_px: float = 2000.0,
+) -> tuple[list[dict], dict]:
+    enhanced = apply_image_enhancement(image_bgr, enhancement_params)
+    return _detector.detect_nuclei_instances_with_diagnostics(
+        enhanced,
+        area_small_px=area_small_px,
+        area_large_px=area_large_px,
+    )
 
 
 def detect_nuclei(
@@ -1454,6 +1761,564 @@ def detect_nuclei(
     """
     image = load_image(image_path)
     return detect_nuclei_in_image(image, enhancement_params)
+
+
+def detect_nuclei_with_diagnostics(
+    image_path: str,
+    enhancement_params: dict | None = None,
+    area_small_px: float = 15.0,
+    area_large_px: float = 2000.0,
+) -> tuple[list[dict], dict]:
+    image = load_image(image_path)
+    return detect_nuclei_in_image_with_diagnostics(
+        image,
+        enhancement_params=enhancement_params,
+        area_small_px=area_small_px,
+        area_large_px=area_large_px,
+    )
+
+
+def estimate_average_cell_diameter_px(
+    average_cell_diameter_px: float | None = None,
+    average_cell_bbox: Sequence[float] | None = None,
+) -> float:
+    if average_cell_diameter_px is not None:
+        diameter = float(average_cell_diameter_px)
+        if diameter <= 0.0:
+            raise ValueError("average_cell_diameter_px должен быть больше 0")
+        return diameter
+
+    if average_cell_bbox is None:
+        raise ValueError(
+            "Нужно задать average_cell_diameter_px или average_cell_bbox (x, y, w, h)"
+        )
+
+    if len(average_cell_bbox) != 4:
+        raise ValueError("average_cell_bbox должен содержать 4 значения: x, y, w, h")
+    width = abs(float(average_cell_bbox[2]))
+    height = abs(float(average_cell_bbox[3]))
+    diameter = 0.5 * (width + height)
+    if diameter <= 0.0:
+        raise ValueError("average_cell_bbox должен задавать положительные ширину и высоту")
+    return float(diameter)
+
+
+def _normalize_rect_roi(rect: Sequence[float], image_w: int, image_h: int, roi_id: str) -> dict | None:
+    if len(rect) != 4:
+        return None
+    x = float(rect[0])
+    y = float(rect[1])
+    w = float(rect[2])
+    h = float(rect[3])
+    if w <= 0.0 or h <= 0.0:
+        return None
+
+    x1 = float(np.clip(x, 0.0, float(image_w)))
+    y1 = float(np.clip(y, 0.0, float(image_h)))
+    x2 = float(np.clip(x + w, 0.0, float(image_w)))
+    y2 = float(np.clip(y + h, 0.0, float(image_h)))
+    if x2 - x1 < 1.0 or y2 - y1 < 1.0:
+        return None
+
+    return {
+        "id": roi_id,
+        "kind": "rect",
+        "rect": [x1, y1, x2 - x1, y2 - y1],
+        "bbox": [x1, y1, x2, y2],
+        "area_px": float((x2 - x1) * (y2 - y1)),
+    }
+
+
+def _normalize_poly_roi(points: Sequence[Sequence[float]], image_w: int, image_h: int, roi_id: str) -> dict | None:
+    poly: list[tuple[float, float]] = []
+    for p in points:
+        if len(p) < 2:
+            continue
+        px = float(np.clip(float(p[0]), 0.0, float(image_w)))
+        py = float(np.clip(float(p[1]), 0.0, float(image_h)))
+        poly.append((px, py))
+
+    if len(poly) < 3:
+        return None
+    area_px = polygon_area_px(poly)
+    if area_px <= 0.0:
+        return None
+
+    arr = np.asarray(poly, dtype=np.float32)
+    x1 = float(np.min(arr[:, 0]))
+    y1 = float(np.min(arr[:, 1]))
+    x2 = float(np.max(arr[:, 0]))
+    y2 = float(np.max(arr[:, 1]))
+
+    return {
+        "id": roi_id,
+        "kind": "poly",
+        "points": poly,
+        "bbox": [x1, y1, x2, y2],
+        "area_px": float(area_px),
+    }
+
+
+def normalize_rois_for_image(
+    image_hw: tuple[int, int],
+    roi_rect: Sequence[Sequence[float]] | Sequence[float] | None = None,
+    roi_poly: Sequence[Sequence[Sequence[float]]] | Sequence[Sequence[float]] | None = None,
+) -> list[dict]:
+    image_h, image_w = image_hw
+    rois: list[dict] = []
+
+    rect_items: list[Sequence[float]] = []
+    if roi_rect is not None:
+        if len(roi_rect) == 4 and isinstance(roi_rect[0], (int, float)):
+            rect_items = [roi_rect]  # type: ignore[list-item]
+        else:
+            rect_items = list(roi_rect)  # type: ignore[arg-type]
+
+    for idx, rect in enumerate(rect_items, start=1):
+        roi = _normalize_rect_roi(rect, image_w, image_h, f"rect_{idx}")
+        if roi is not None:
+            rois.append(roi)
+
+    poly_items: list[Sequence[Sequence[float]]] = []
+    if roi_poly is not None:
+        if roi_poly and isinstance(roi_poly[0], (list, tuple)) and len(roi_poly[0]) >= 2 and isinstance(roi_poly[0][0], (int, float)):  # type: ignore[index]
+            poly_items = [roi_poly]  # type: ignore[list-item]
+        else:
+            poly_items = list(roi_poly)  # type: ignore[arg-type]
+
+    for idx, poly in enumerate(poly_items, start=1):
+        roi = _normalize_poly_roi(poly, image_w, image_h, f"poly_{idx}")
+        if roi is not None:
+            rois.append(roi)
+
+    if rois:
+        return rois
+
+    full_roi = _normalize_rect_roi([0.0, 0.0, float(image_w), float(image_h)], image_w, image_h, "full_frame")
+    if full_roi is None:
+        raise ValueError("Не удалось сформировать ROI полного кадра")
+    return [full_roi]
+
+
+def _roi_to_infer_space(roi: dict, scale: float) -> dict:
+    out = dict(roi)
+    if roi.get("kind") == "rect":
+        x, y, w, h = roi["rect"]
+        out["rect"] = [x * scale, y * scale, w * scale, h * scale]
+    if roi.get("kind") == "poly":
+        points = [(float(x) * scale, float(y) * scale) for x, y in roi.get("points", [])]
+        out["points"] = points
+
+    bbox = roi.get("bbox", [0.0, 0.0, 0.0, 0.0])
+    out["bbox"] = [float(bbox[0]) * scale, float(bbox[1]) * scale, float(bbox[2]) * scale, float(bbox[3]) * scale]
+    return out
+
+
+def _generate_tile_starts(start: int, end: int, tile_size: int, stride: int) -> list[int]:
+    if end <= start:
+        return [start]
+    span = end - start
+    if span <= tile_size:
+        return [start]
+
+    starts = list(range(start, end - tile_size + 1, stride))
+    if not starts:
+        starts = [start]
+
+    last_start = end - tile_size
+    if starts[-1] != last_start:
+        starts.append(last_start)
+    return starts
+
+
+def _tile_bbox_intersects(a: Sequence[float], b: Sequence[float]) -> bool:
+    return not (a[2] <= b[0] or a[0] >= b[2] or a[3] <= b[1] or a[1] >= b[3])
+
+
+def _polygon_tile_cover_ratio(
+    polygon_points: Sequence[tuple[float, float]],
+    tile_rect: Sequence[int],
+) -> float:
+    tx, ty, tw, th = [int(v) for v in tile_rect]
+    if tw <= 0 or th <= 0:
+        return 0.0
+
+    tile_bbox = [float(tx), float(ty), float(tx + tw), float(ty + th)]
+    poly_arr = np.asarray(polygon_points, dtype=np.float32)
+    if poly_arr.size == 0:
+        return 0.0
+    poly_bbox = [
+        float(np.min(poly_arr[:, 0])),
+        float(np.min(poly_arr[:, 1])),
+        float(np.max(poly_arr[:, 0])),
+        float(np.max(poly_arr[:, 1])),
+    ]
+    if not _tile_bbox_intersects(poly_bbox, tile_bbox):
+        return 0.0
+
+    local_poly = np.round(poly_arr - np.asarray([[tx, ty]], dtype=np.float32)).astype(np.int32)
+    mask = np.zeros((th, tw), dtype=np.uint8)
+    cv2.fillPoly(mask, [local_poly.reshape((-1, 1, 2))], color=255)
+    cover = float(np.count_nonzero(mask)) / float(max(1, tw * th))
+    return cover
+
+
+def _build_tiles_for_roi(
+    roi_infer: dict,
+    image_w_infer: int,
+    image_h_infer: int,
+    tile_size_infer: int,
+    stride_infer: int,
+    min_roi_cover_ratio: float,
+) -> list[dict]:
+    bbox = roi_infer.get("bbox", [0.0, 0.0, 0.0, 0.0])
+    bx1 = int(max(0, np.floor(float(bbox[0]))))
+    by1 = int(max(0, np.floor(float(bbox[1]))))
+    bx2 = int(min(image_w_infer, np.ceil(float(bbox[2]))))
+    by2 = int(min(image_h_infer, np.ceil(float(bbox[3]))))
+    if bx2 <= bx1 or by2 <= by1:
+        return []
+
+    x_starts = _generate_tile_starts(bx1, bx2, tile_size_infer, stride_infer)
+    y_starts = _generate_tile_starts(by1, by2, tile_size_infer, stride_infer)
+    roi_bbox = [bx1, by1, bx2, by2]
+
+    tiles: list[dict] = []
+    for y0 in y_starts:
+        for x0 in x_starts:
+            x1 = min(image_w_infer, x0 + tile_size_infer)
+            y1 = min(image_h_infer, y0 + tile_size_infer)
+            tw = int(x1 - x0)
+            th = int(y1 - y0)
+            if tw <= 0 or th <= 0:
+                continue
+
+            cover_ratio = 1.0
+            if roi_infer.get("kind") == "poly":
+                cover_ratio = _polygon_tile_cover_ratio(roi_infer.get("points", []), [x0, y0, tw, th])
+                if cover_ratio <= 0.0:
+                    continue
+                if min_roi_cover_ratio > 0.0 and cover_ratio < float(min_roi_cover_ratio):
+                    continue
+
+            touches_outer = (
+                x0 <= roi_bbox[0]
+                or y0 <= roi_bbox[1]
+                or x1 >= roi_bbox[2]
+                or y1 >= roi_bbox[3]
+                or x0 <= 0
+                or y0 <= 0
+                or x1 >= image_w_infer
+                or y1 >= image_h_infer
+            )
+
+            tiles.append(
+                {
+                    "x": int(x0),
+                    "y": int(y0),
+                    "w": int(tw),
+                    "h": int(th),
+                    "touches_outer": bool(touches_outer),
+                    "roi_cover_ratio": float(cover_ratio),
+                    "roi_id": roi_infer.get("id"),
+                }
+            )
+    return tiles
+
+
+def _shift_nucleus_to_global(nucleus: dict, shift_x: float, shift_y: float) -> dict:
+    out = dict(nucleus)
+    center = nucleus.get("center")
+    if center is not None:
+        out["center"] = (float(center[0]) + float(shift_x), float(center[1]) + float(shift_y))
+    contour = nucleus.get("contour", [])
+    shifted_contour = []
+    for x, y in contour:
+        shifted_contour.append((float(x) + float(shift_x), float(y) + float(shift_y)))
+    out["contour"] = shifted_contour
+    return out
+
+
+def _center_in_tile_border_zone(center: tuple[float, float], tile_w: int, tile_h: int, trim_px: float) -> bool:
+    if trim_px <= 0.0:
+        return False
+    cx = float(center[0])
+    cy = float(center[1])
+    return (
+        cx < trim_px
+        or cy < trim_px
+        or cx > (float(tile_w) - trim_px)
+        or cy > (float(tile_h) - trim_px)
+    )
+
+
+def _nucleus_bbox(nucleus: dict) -> tuple[float, float, float, float]:
+    contour = nucleus.get("contour", [])
+    if contour:
+        arr = np.asarray(contour, dtype=np.float32)
+        if arr.ndim == 2 and arr.shape[0] >= 1:
+            x1 = float(np.min(arr[:, 0]))
+            y1 = float(np.min(arr[:, 1]))
+            x2 = float(np.max(arr[:, 0]))
+            y2 = float(np.max(arr[:, 1]))
+            return x1, y1, x2, y2
+
+    center = nucleus.get("center", (0.0, 0.0))
+    area = max(1.0, float(nucleus.get("area_px", 1.0)))
+    radius = float(np.sqrt(area / np.pi))
+    cx = float(center[0])
+    cy = float(center[1])
+    return cx - radius, cy - radius, cx + radius, cy + radius
+
+
+def _bbox_iou(a: tuple[float, float, float, float], b: tuple[float, float, float, float]) -> float:
+    ax1, ay1, ax2, ay2 = a
+    bx1, by1, bx2, by2 = b
+    ix1 = max(ax1, bx1)
+    iy1 = max(ay1, by1)
+    ix2 = min(ax2, bx2)
+    iy2 = min(ay2, by2)
+    iw = max(0.0, ix2 - ix1)
+    ih = max(0.0, iy2 - iy1)
+    inter = iw * ih
+    if inter <= 0.0:
+        return 0.0
+    area_a = max(1e-6, (ax2 - ax1) * (ay2 - ay1))
+    area_b = max(1e-6, (bx2 - bx1) * (by2 - by1))
+    union = area_a + area_b - inter
+    if union <= 0.0:
+        return 0.0
+    return float(inter / union)
+
+
+def _nucleus_proxy_score(nucleus: dict) -> float:
+    for key in ("score", "prob", "confidence"):
+        value = nucleus.get(key)
+        if value is None:
+            continue
+        try:
+            return float(value)
+        except Exception:
+            continue
+    return float(nucleus.get("area_px", 0.0))
+
+
+def deduplicate_nuclei_by_bbox_iou(nuclei: list[dict], merge_iou_thresh: float = 0.3) -> list[dict]:
+    if not nuclei:
+        return nuclei
+    thresh = float(np.clip(float(merge_iou_thresh), 0.0, 1.0))
+    ranked = sorted(nuclei, key=_nucleus_proxy_score, reverse=True)
+    kept: list[dict] = []
+    kept_boxes: list[tuple[float, float, float, float]] = []
+    for nucleus in ranked:
+        box = _nucleus_bbox(nucleus)
+        conflict = False
+        for ref_box in kept_boxes:
+            if _bbox_iou(box, ref_box) > thresh:
+                conflict = True
+                break
+        if conflict:
+            continue
+        kept.append(nucleus)
+        kept_boxes.append(box)
+    return kept
+
+
+def _point_in_roi(point: tuple[float, float], roi: dict) -> bool:
+    if roi.get("kind") == "rect":
+        x, y, w, h = roi.get("rect", [0.0, 0.0, 0.0, 0.0])
+        return (x <= point[0] <= x + w) and (y <= point[1] <= y + h)
+    if roi.get("kind") == "poly":
+        return point_in_polygon(point, roi.get("points", []))
+    return False
+
+
+def _point_in_any_roi(point: tuple[float, float], rois: Sequence[dict]) -> bool:
+    for roi in rois:
+        if _point_in_roi(point, roi):
+            return True
+    return False
+
+
+def _roi_area_in_cells(area_px: float, average_cell_diameter_px: float) -> float:
+    if average_cell_diameter_px <= 0.0:
+        return 0.0
+    cell_area = np.pi * (average_cell_diameter_px * 0.5) ** 2
+    if cell_area <= 0.0:
+        return 0.0
+    return float(area_px / cell_area)
+
+
+def detect_nuclei_tiled_in_image(
+    image_bgr: np.ndarray,
+    average_cell_diameter_px: float | None = None,
+    average_cell_bbox: Sequence[float] | None = None,
+    enhancement_params: dict | None = None,
+    tile_factor: float = 64.0,
+    overlap_ratio: float = 0.25,
+    tile_min_px: int = 512,
+    tile_max_px: int = 2048,
+    min_roi_cover_ratio: float = 0.05,
+    roi_rect: Sequence[Sequence[float]] | Sequence[float] | None = None,
+    roi_poly: Sequence[Sequence[Sequence[float]]] | Sequence[Sequence[float]] | None = None,
+    merge_iou_thresh: float = 0.30,
+    border_trim_enabled: bool = True,
+    border_trim_factor: float = 1.0,
+) -> tuple[list[dict], dict]:
+    if image_bgr is None or image_bgr.size == 0:
+        raise ValueError("Пустое изображение для sliced inference")
+
+    image_h, image_w = image_bgr.shape[:2]
+    avg_diameter = estimate_average_cell_diameter_px(
+        average_cell_diameter_px=average_cell_diameter_px,
+        average_cell_bbox=average_cell_bbox,
+    )
+
+    rois = normalize_rois_for_image((image_h, image_w), roi_rect=roi_rect, roi_poly=roi_poly)
+    scale = float(get_detection_params().get("scale", 1.0))
+    scale = float(max(1e-6, scale))
+    image_w_infer = int(max(1, round(float(image_w) * scale)))
+    image_h_infer = int(max(1, round(float(image_h) * scale)))
+
+    overlap = float(np.clip(float(overlap_ratio), 0.0, 0.95))
+    tile_factor_value = float(max(1.0, float(tile_factor)))
+    tile_min = int(max(32, int(tile_min_px)))
+    tile_max = int(max(tile_min, int(tile_max_px)))
+    avg_diameter_infer = float(avg_diameter * scale)
+    tile_size_infer = int(np.clip(round(tile_factor_value * avg_diameter_infer), tile_min, tile_max))
+    stride_infer = int(max(1, round(float(tile_size_infer) * (1.0 - overlap))))
+    tile_size_orig = int(max(1, round(float(tile_size_infer) / scale)))
+    stride_orig = int(max(1, round(float(stride_infer) / scale)))
+
+    trim_px = 0
+    if border_trim_enabled:
+        trim_px = int(max(0, round(float(border_trim_factor) * float(avg_diameter))))
+
+    rois_infer = [_roi_to_infer_space(roi, scale) for roi in rois]
+    all_candidates: list[dict] = []
+    total_tiles = 0
+    used_tiles = 0
+    roi_reports = []
+
+    for roi, roi_infer in zip(rois, rois_infer):
+        tiles = _build_tiles_for_roi(
+            roi_infer=roi_infer,
+            image_w_infer=image_w_infer,
+            image_h_infer=image_h_infer,
+            tile_size_infer=tile_size_infer,
+            stride_infer=stride_infer,
+            min_roi_cover_ratio=float(max(0.0, min_roi_cover_ratio)),
+        )
+        total_tiles += len(tiles)
+
+        for tile in tiles:
+            x0_inf = int(tile["x"])
+            y0_inf = int(tile["y"])
+            x1_inf = int(tile["x"] + tile["w"])
+            y1_inf = int(tile["y"] + tile["h"])
+
+            x0 = int(max(0, np.floor(float(x0_inf) / scale)))
+            y0 = int(max(0, np.floor(float(y0_inf) / scale)))
+            x1 = int(min(image_w, np.ceil(float(x1_inf) / scale)))
+            y1 = int(min(image_h, np.ceil(float(y1_inf) / scale)))
+            if x1 <= x0 or y1 <= y0:
+                continue
+
+            tile_image = image_bgr[y0:y1, x0:x1]
+            if tile_image.size == 0:
+                continue
+
+            used_tiles += 1
+            local_nuclei = detect_nuclei_in_image(tile_image, enhancement_params=enhancement_params)
+            for nucleus in local_nuclei:
+                center = nucleus.get("center")
+                if center is None:
+                    continue
+                if trim_px > 0 and not bool(tile.get("touches_outer", False)):
+                    if _center_in_tile_border_zone(center, tile_image.shape[1], tile_image.shape[0], float(trim_px)):
+                        continue
+                shifted = _shift_nucleus_to_global(nucleus, x0, y0)
+                shifted["tile_roi_id"] = roi.get("id")
+                all_candidates.append(shifted)
+
+        roi_reports.append(
+            {
+                "roi_id": roi.get("id"),
+                "roi_kind": roi.get("kind"),
+                "roi_area_px": float(roi.get("area_px", 0.0)),
+                "roi_area_in_cells": _roi_area_in_cells(float(roi.get("area_px", 0.0)), avg_diameter),
+                "tiles_total": len(tiles),
+            }
+        )
+
+    in_roi_candidates: list[dict] = []
+    for nucleus in all_candidates:
+        center = nucleus.get("center")
+        if center is None:
+            continue
+        point = (float(center[0]), float(center[1]))
+        if _point_in_any_roi(point, rois):
+            in_roi_candidates.append(nucleus)
+
+    merged = deduplicate_nuclei_by_bbox_iou(in_roi_candidates, merge_iou_thresh=merge_iou_thresh)
+
+    report = {
+        "average_cell_diameter_px": float(avg_diameter),
+        "scale": float(scale),
+        "tile_factor": float(tile_factor_value),
+        "overlap_ratio": float(overlap),
+        "tile_size_px": int(tile_size_infer),
+        "stride_px": int(stride_infer),
+        "tile_size_orig_px": int(tile_size_orig),
+        "stride_orig_px": int(stride_orig),
+        "min_roi_cover_ratio": float(max(0.0, min_roi_cover_ratio)),
+        "merge_iou_thresh": float(np.clip(float(merge_iou_thresh), 0.0, 1.0)),
+        "border_trim_enabled": bool(border_trim_enabled),
+        "border_trim_px": int(trim_px),
+        "roi_count": len(rois),
+        "tiles_total": int(total_tiles),
+        "tiles_used": int(used_tiles),
+        "candidates_before_roi_filter": int(len(all_candidates)),
+        "candidates_in_roi": int(len(in_roi_candidates)),
+        "final_count": int(len(merged)),
+        "roi_stats": roi_reports,
+    }
+    return merged, report
+
+
+def detect_nuclei_tiled(
+    image_path: str,
+    average_cell_diameter_px: float | None = None,
+    average_cell_bbox: Sequence[float] | None = None,
+    enhancement_params: dict | None = None,
+    tile_factor: float = 64.0,
+    overlap_ratio: float = 0.25,
+    tile_min_px: int = 512,
+    tile_max_px: int = 2048,
+    min_roi_cover_ratio: float = 0.05,
+    roi_rect: Sequence[Sequence[float]] | Sequence[float] | None = None,
+    roi_poly: Sequence[Sequence[Sequence[float]]] | Sequence[Sequence[float]] | None = None,
+    merge_iou_thresh: float = 0.30,
+    border_trim_enabled: bool = True,
+    border_trim_factor: float = 1.0,
+) -> tuple[list[dict], dict]:
+    image = load_image(image_path)
+    return detect_nuclei_tiled_in_image(
+        image_bgr=image,
+        average_cell_diameter_px=average_cell_diameter_px,
+        average_cell_bbox=average_cell_bbox,
+        enhancement_params=enhancement_params,
+        tile_factor=tile_factor,
+        overlap_ratio=overlap_ratio,
+        tile_min_px=tile_min_px,
+        tile_max_px=tile_max_px,
+        min_roi_cover_ratio=min_roi_cover_ratio,
+        roi_rect=roi_rect,
+        roi_poly=roi_poly,
+        merge_iou_thresh=merge_iou_thresh,
+        border_trim_enabled=border_trim_enabled,
+        border_trim_factor=border_trim_factor,
+    )
 
 
 def calibrate_scale(

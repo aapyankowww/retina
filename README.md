@@ -45,6 +45,13 @@ pip install -r requirements.txt
 python main.py
 ```
 
+## CLI для пресетов/диагностики/тюнинга
+- `python nuclei_cli.py infer ...` — одиночный инференс с пресетами `legacy|balanced|high_recall`.
+- `python nuclei_cli.py tune ...` — подбор параметров по папке изображений без разметки.
+- `python smoke_infer.py ...` — минимальный smoke-тест.
+
+Подробные команды: [docs/tuning.md](docs/tuning.md).
+
 ## Быстрый сценарий работы
 1. При старте приложение **обязательно** запросит калибровку масштаба.
 2. Нажмите `Калибровать масштаб`:
