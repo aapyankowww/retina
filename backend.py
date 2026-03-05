@@ -32,7 +32,6 @@ _CELLPOSE_IMPORT_ATTEMPTED = False
 
 SUPPORTED_IMAGE_FORMATS = {".tif", ".tiff", ".png", ".jpg", ".jpeg"}
 DETECTOR_BACKENDS = (
-    "cellpose_nuclei",
     "stardist",
 )
 STARDIST_PRETRAINED_MODELS = (
@@ -115,7 +114,7 @@ class LoadedModel:
 
 @dataclass
 class StarDistConfig:
-    detector_backend: str = "cellpose_nuclei"
+    detector_backend: str = "stardist"
     model_name: str = "2D_versatile_he"
     prob_thresh: float = 0.15
     nms_thresh: float = 0.55
@@ -135,6 +134,8 @@ class StarDistConfig:
     min_purple_ratio: float = 0.20
     require_center_purple: bool = True
     strict_purple_filter: bool = True
+    upscale_factor: float = 1.5
+    stain_norm_enabled: bool = True
     cellpose_model_type: str = "nuclei"
     cellpose_diameter_px: float = 14.0
     cellpose_flow_threshold: float = 0.40
@@ -243,6 +244,8 @@ class NucleiDetector:
             "min_purple_ratio": cfg.min_purple_ratio,
             "require_center_purple": cfg.require_center_purple,
             "strict_purple_filter": cfg.strict_purple_filter,
+            "upscale_factor": cfg.upscale_factor,
+            "stain_norm_enabled": cfg.stain_norm_enabled,
             "cellpose_model_type": cfg.cellpose_model_type,
             "cellpose_diameter_px": cfg.cellpose_diameter_px,
             "cellpose_flow_threshold": cfg.cellpose_flow_threshold,
@@ -296,6 +299,8 @@ class NucleiDetector:
         strict_purple_filter = _to_bool(
             incoming.get("strict_purple_filter", cfg.strict_purple_filter)
         )
+        upscale_factor = float(incoming.get("upscale_factor", cfg.upscale_factor))
+        stain_norm_enabled = _to_bool(incoming.get("stain_norm_enabled", cfg.stain_norm_enabled))
         cellpose_model_type = str(
             incoming.get("cellpose_model_type", cfg.cellpose_model_type)
         ).strip() or cfg.cellpose_model_type
@@ -343,6 +348,8 @@ class NucleiDetector:
             raise ValueError("Максимальная яркость должна быть в диапазоне [0, 255]")
         if not (0.0 <= min_purple_ratio <= 1.0):
             raise ValueError("Минимальная доля окрашенных пикселей должна быть в диапазоне [0, 1]")
+        if not (1.0 <= upscale_factor <= 4.0):
+            raise ValueError("Коэффициент апскейла должен быть в диапазоне [1, 4]")
         if cellpose_diameter_px <= 0.0:
             raise ValueError("Диаметр ядра для Cellpose должен быть больше 0")
         if not (0.0 <= cellpose_flow_threshold <= 2.0):
@@ -373,6 +380,8 @@ class NucleiDetector:
         cfg.min_purple_ratio = min_purple_ratio
         cfg.require_center_purple = require_center_purple
         cfg.strict_purple_filter = strict_purple_filter
+        cfg.upscale_factor = upscale_factor
+        cfg.stain_norm_enabled = stain_norm_enabled
         cfg.cellpose_model_type = cellpose_model_type
         cfg.cellpose_diameter_px = cellpose_diameter_px
         cfg.cellpose_flow_threshold = cellpose_flow_threshold
@@ -403,28 +412,51 @@ class NucleiDetector:
         area_small_px: float = 15.0,
         area_large_px: float = 2000.0,
     ) -> tuple[list[dict], dict]:
-        diagnostics = _build_detection_diagnostics_template(area_small_px, area_large_px)
-        if self.loaded_model is None:
-            backend = str(self.stardist_config.detector_backend).strip().lower()
-            diagnostics["backend"] = backend
-            if backend == "cellpose_nuclei":
-                nuclei = self._cellpose_pretrained_instances(image_bgr, diagnostics=diagnostics)
-            else:
-                nuclei = self._default_pretrained_instances(image_bgr, diagnostics=diagnostics)
-        else:
-            diagnostics["backend"] = "custom_model"
-            nuclei_raw = _extract_nuclei_from_binary_mask(self._model_mask(image_bgr))
-            diagnostics["model_candidates_before_nms"] = None
-            diagnostics["after_nms_count"] = int(len(nuclei_raw))
-            nuclei = self._postprocess_nuclei(nuclei_raw, image_bgr, diagnostics=diagnostics)
+        cfg = self.stardist_config
+        upscale_factor = float(cfg.upscale_factor)
+        work_image = image_bgr
+        orig_min_area = cfg.min_area_px
+        orig_max_area = cfg.max_area_px
+        orig_cellpose_diameter = cfg.cellpose_diameter_px
 
-        diagnostics["final_count"] = int(len(nuclei))
-        diagnostics["final_area_stats"] = _summarize_nuclei_areas(
-            nuclei,
-            small_area_px=float(diagnostics["small_area_threshold_px"]),
-            large_area_px=float(diagnostics["large_area_threshold_px"]),
-        )
-        return nuclei, diagnostics
+        if upscale_factor > 1.0 + 1e-4:
+            work_image = _upscale_image(image_bgr, upscale_factor)
+            scale_sq = upscale_factor * upscale_factor
+            cfg.min_area_px = int(round(orig_min_area * scale_sq))
+            if orig_max_area > 0:
+                cfg.max_area_px = int(round(orig_max_area * scale_sq))
+            cfg.cellpose_diameter_px = float(orig_cellpose_diameter * upscale_factor)
+
+        try:
+            diagnostics = _build_detection_diagnostics_template(area_small_px, area_large_px)
+            if self.loaded_model is None:
+                backend = str(cfg.detector_backend).strip().lower()
+                diagnostics["backend"] = backend
+                if backend == "cellpose_nuclei":
+                    nuclei = self._cellpose_pretrained_instances(work_image, diagnostics=diagnostics)
+                else:
+                    nuclei = self._default_pretrained_instances(work_image, diagnostics=diagnostics)
+            else:
+                diagnostics["backend"] = "custom_model"
+                nuclei_raw = _extract_nuclei_from_binary_mask(self._model_mask(work_image))
+                diagnostics["model_candidates_before_nms"] = None
+                diagnostics["after_nms_count"] = int(len(nuclei_raw))
+                nuclei = self._postprocess_nuclei(nuclei_raw, work_image, diagnostics=diagnostics)
+
+            if upscale_factor > 1.0 + 1e-4:
+                nuclei = _scale_nuclei_coords(nuclei, upscale_factor)
+
+            diagnostics["final_count"] = int(len(nuclei))
+            diagnostics["final_area_stats"] = _summarize_nuclei_areas(
+                nuclei,
+                small_area_px=float(diagnostics["small_area_threshold_px"]),
+                large_area_px=float(diagnostics["large_area_threshold_px"]),
+            )
+            return nuclei, diagnostics
+        finally:
+            cfg.min_area_px = orig_min_area
+            cfg.max_area_px = orig_max_area
+            cfg.cellpose_diameter_px = orig_cellpose_diameter
 
     def _preprocess_patch(self, image_bgr_patch: np.ndarray) -> np.ndarray:
         image_rgb = cv2.cvtColor(image_bgr_patch, cv2.COLOR_BGR2RGB)
@@ -713,7 +745,10 @@ class NucleiDetector:
 
     def _prepare_stardist_input(self, image_bgr: np.ndarray, n_channel_in: int) -> np.ndarray:
         cfg = self.stardist_config
-        rgb = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB).astype(np.float32) / 255.0
+        work = image_bgr
+        if bool(cfg.stain_norm_enabled):
+            work = _reinhard_stain_normalize(work)
+        rgb = cv2.cvtColor(work, cv2.COLOR_BGR2RGB).astype(np.float32) / 255.0
         normalized = _percentile_normalize_rgb(rgb, cfg.norm_p_low, cfg.norm_p_high)
         normalized = np.clip(normalized.astype(np.float32), 0.0, 1.0)
 
@@ -730,6 +765,50 @@ class NucleiDetector:
         repeats = int(np.ceil(n_channel_in / normalized.shape[2]))
         expanded = np.tile(normalized, (1, 1, repeats))
         return expanded[..., :n_channel_in]
+
+
+_HE_REF_MEAN_LAB = np.array([173.0, 140.0, 123.0], dtype=np.float32)
+_HE_REF_STD_LAB = np.array([46.0, 12.0, 10.0], dtype=np.float32)
+
+
+def _reinhard_stain_normalize(image_bgr: np.ndarray) -> np.ndarray:
+    lab = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2LAB).astype(np.float32)
+    for c in range(3):
+        src_mean = float(lab[:, :, c].mean())
+        src_std = float(lab[:, :, c].std()) + 1e-6
+        lab[:, :, c] = (
+            (lab[:, :, c] - src_mean) * (_HE_REF_STD_LAB[c] / src_std)
+            + _HE_REF_MEAN_LAB[c]
+        )
+    lab = np.clip(lab, 0.0, 255.0).astype(np.uint8)
+    return cv2.cvtColor(lab, cv2.COLOR_LAB2BGR)
+
+
+def _upscale_image(image_bgr: np.ndarray, factor: float) -> np.ndarray:
+    if abs(factor - 1.0) < 1e-4:
+        return image_bgr
+    h, w = image_bgr.shape[:2]
+    out_h = int(round(h * factor))
+    out_w = int(round(w * factor))
+    return cv2.resize(image_bgr, (out_w, out_h), interpolation=cv2.INTER_LANCZOS4)
+
+
+def _scale_nuclei_coords(nuclei: list[dict], factor: float) -> list[dict]:
+    if abs(factor - 1.0) < 1e-4:
+        return nuclei
+    inv = 1.0 / factor
+    inv2 = inv * inv
+    out: list[dict] = []
+    for nucleus in nuclei:
+        item = dict(nucleus)
+        center = nucleus.get("center")
+        contour = nucleus.get("contour", [])
+        if center is not None:
+            item["center"] = (float(center[0]) * inv, float(center[1]) * inv)
+        item["contour"] = [(float(x) * inv, float(y) * inv) for x, y in contour]
+        item["area_px"] = float(nucleus.get("area_px", 0.0)) * inv2
+        out.append(item)
+    return out
 
 
 _detector = NucleiDetector()
@@ -996,7 +1075,23 @@ def run_detection_job(payload: dict, event_queue) -> None:
             image_path = str(payload.get("image_path", "")).strip()
             if not image_path:
                 raise ValueError("Не передан путь к изображению для детекции")
-            nuclei = detect_nuclei(image_path, enhancement_params)
+            roi_rect = payload.get("roi_rect")
+            roi_poly = payload.get("roi_poly")
+            roi_before_infer = bool(payload.get("roi_before_infer", False))
+            if roi_before_infer and (roi_rect or roi_poly):
+                avg_diam = float(payload.get("average_cell_diameter_px", 14.0))
+                if avg_diam <= 0.0:
+                    avg_diam = 14.0
+                nuclei, _ = detect_nuclei_tiled(
+                    image_path=image_path,
+                    average_cell_diameter_px=avg_diam,
+                    enhancement_params=enhancement_params,
+                    min_roi_cover_ratio=float(payload.get("min_roi_cover_ratio", 0.05)),
+                    roi_rect=roi_rect,
+                    roi_poly=roi_poly,
+                )
+            else:
+                nuclei = detect_nuclei(image_path, enhancement_params)
             event_queue.put({"type": "result", "nuclei": nuclei})
             return
 
