@@ -1,18 +1,20 @@
+# Core GUI and image processing
 PyQt5>=5.15
 numpy>=1.24
 opencv-python-headless>=4.8
 pandas>=2.0
+openpyxl>=3.1          # required for Excel (.xlsx) export via pandas
 
-# Optional runtime for custom ONNX models
-onnxruntime>=1.16
-
-# Optional runtime for custom PyTorch .pt models
-torch>=2.2
-
-# Default pre-trained nuclei detector (CPU capable)
+# Default pre-trained nuclei detector (CPU)
 stardist>=0.9
 csbdeep>=0.8
 tensorflow-cpu>=2.20
 
-# Optional alternative detector
+# Optional: custom ONNX model runtime
+onnxruntime>=1.16
+
+# Optional: custom PyTorch .pt model runtime
+torch>=2.2
+
+# Optional: alternative Cellpose detector
 cellpose>=3.0

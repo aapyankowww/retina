@@ -31,6 +31,7 @@ from PyQt5.QtWidgets import (
     QDialogButtonBox,
     QDoubleSpinBox,
     QFormLayout,
+    QFrame,
     QGraphicsEllipseItem,
     QGraphicsItem,
     QGraphicsLineItem,
@@ -47,6 +48,7 @@ from PyQt5.QtWidgets import (
     QMessageBox,
     QProgressDialog,
     QPushButton,
+    QScrollArea,
     QShortcut,
     QSlider,
     QSpinBox,
@@ -1501,7 +1503,7 @@ class DetectionParamsDialog(QDialog):
     def _apply_sensitive_preset(self) -> None:
         self.model_combo.setCurrentText("2D_versatile_he")
         self.prob_spin.setValue(0.15)
-        self.nms_spin.setValue(0.70)
+        self.nms_spin.setValue(0.29)
         self.scale_spin.setValue(1.0)
         self.min_area_spin.setValue(10)
         self.max_area_spin.setValue(0)
@@ -1519,7 +1521,7 @@ class DetectionParamsDialog(QDialog):
         self.sat_min_spin.setValue(30)
         self.val_max_spin.setValue(215)
         self.min_ratio_spin.setValue(0.12)
-        self.upscale_spin.setValue(1.75)
+        self.upscale_spin.setValue(2.05)
         self.stain_norm_check.setChecked(True)
 
     def _collect_params(self) -> dict:
@@ -2085,124 +2087,318 @@ class MainWindow(QMainWindow):
 
         self._build_ui()
         self._connect_signals()
-        self._apply_dark_theme()
+        self._apply_light_theme()
         self._update_detector_status()
         self._update_scale_status()
-        QTimer.singleShot(0, self._enforce_initial_scale)
 
     def _build_ui(self) -> None:
         central = QWidget(self)
-        root_layout = QHBoxLayout(central)
-        root_layout.setContentsMargins(8, 8, 8, 8)
-        root_layout.setSpacing(8)
+        main_layout = QVBoxLayout(central)
+        main_layout.setContentsMargins(0, 0, 0, 0)
+        main_layout.setSpacing(0)
 
-        # Left panel
-        left = QWidget(self)
+        # ── Header bar ──────────────────────────────────────────────────
+        header = QWidget()
+        header.setObjectName("header_bar")
+        header.setFixedHeight(46)
+        header_layout = QHBoxLayout(header)
+        header_layout.setContentsMargins(16, 0, 16, 0)
+        header_layout.setSpacing(12)
+        lbl_app = QLabel("Анализ клеточных ядер")
+        lbl_app.setObjectName("app_title")
+        self.proc_label = QLabel("Готово к работе")
+        self.proc_label.setObjectName("header_proc")
+        self.detector_label = QLabel("Детектор: StarDist")
+        self.detector_label.setObjectName("header_det")
+        header_layout.addWidget(lbl_app)
+        header_layout.addStretch(1)
+        header_layout.addWidget(self.proc_label)
+        header_layout.addWidget(self.detector_label)
+        main_layout.addWidget(header)
+
+        # ── Three-column body ────────────────────────────────────────────
+        body = QWidget()
+        body_layout = QHBoxLayout(body)
+        body_layout.setContentsMargins(0, 0, 0, 0)
+        body_layout.setSpacing(0)
+        main_layout.addWidget(body, 1)
+
+        # ── Left scroll panel ────────────────────────────────────────────
+        left_scroll = QScrollArea()
+        left_scroll.setObjectName("left_scroll")
+        left_scroll.setWidgetResizable(True)
+        left_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        left_scroll.setFixedWidth(340)
+
+        left = QWidget()
+        left.setObjectName("left_panel")
         left_layout = QVBoxLayout(left)
-        left_layout.setContentsMargins(8, 8, 8, 8)
-        left_layout.setSpacing(8)
+        left_layout.setContentsMargins(10, 10, 10, 10)
+        left_layout.setSpacing(4)
 
-        self.btn_open = QPushButton("Открыть изображение")
-        self.btn_load_model = QPushButton("Загрузить модель (.pt/.onnx)")
-        self.btn_reset_model = QPushButton("Сбросить модель")
+        # Step 1 — Scale calibration
+        step1, c1 = self._make_step_widget(
+            "1", "Масштаб", "Задайте пространственный масштаб"
+        )
         self.btn_calibrate = QPushButton("Калибровать масштаб")
-        self.btn_detect = QPushButton("Детектировать ядра")
-        self.btn_detection_params = QPushButton("Параметры детекции")
-        self.btn_batch = QPushButton("Пакетная обработка")
+        self.btn_calibrate.setMinimumHeight(48)
+        self.btn_calibrate.setObjectName("btn_step")
+        self.btn_calibrate.setToolTip(
+            "Откройте фотографию линейки и укажите реальную длину — "
+            "программа рассчитает, сколько пикселей содержится в одном миллиметре."
+        )
+        self.scale_label = QLabel("Масштаб не задан")
+        self.scale_label.setObjectName("step_status")
+        c1.addWidget(self.btn_calibrate)
+        c1.addWidget(self.scale_label)
+        left_layout.addWidget(step1)
 
-        self.btn_rect = QPushButton("Прямоугольник")
-        self.btn_poly = QPushButton("Полигон")
-        self.btn_line = QPushButton("Линия")
-        self.btn_zoom_in_main = QPushButton("Увеличить (+)")
-        self.btn_zoom_out_main = QPushButton("Уменьшить (-)")
-        self.btn_zoom_100_main = QPushButton("Масштаб 100%")
+        # Step 2 — Open image
+        step2, c2 = self._make_step_widget(
+            "2", "Изображение", "Откройте гистологический снимок"
+        )
+        self.btn_open = QPushButton("Открыть изображение")
+        self.btn_open.setMinimumHeight(48)
+        self.btn_open.setObjectName("btn_step")
+        self.btn_open.setToolTip(
+            "Выберите файл с гистологическим снимком. "
+            "Поддерживаются форматы TIFF, PNG и JPEG."
+        )
+        c2.addWidget(self.btn_open)
+        left_layout.addWidget(step2)
 
-        self.btn_rect.setCheckable(True)
-        self.btn_poly.setCheckable(True)
-        self.btn_line.setCheckable(True)
-
-        self.tool_group = QButtonGroup(self)
-        self.tool_group.setExclusive(True)
-        self.tool_group.addButton(self.btn_rect)
-        self.tool_group.addButton(self.btn_poly)
-        self.tool_group.addButton(self.btn_line)
-
-        left_layout.addWidget(self.btn_open)
-        left_layout.addWidget(self.btn_load_model)
-        left_layout.addWidget(self.btn_reset_model)
-        left_layout.addWidget(self.btn_calibrate)
-        left_layout.addWidget(self.btn_detect)
-        left_layout.addWidget(self.btn_detection_params)
-        left_layout.addWidget(self.btn_batch)
-
-        enhance_group = QGroupBox("Цветокоррекция")
-        enhance_layout = QFormLayout(enhance_group)
-
+        # Step 3 — Color correction
+        step3, c3 = self._make_step_widget(
+            "3", "Цветокоррекция", "Настройте яркость и контрастность"
+        )
         self.slider_saturation = QSlider(Qt.Horizontal)
         self.slider_saturation.setRange(0, 300)
+        self.slider_saturation.setToolTip(
+            "Насыщенность цвета: при значении 1.00 цвет не изменяется."
+        )
         self.slider_brightness = QSlider(Qt.Horizontal)
         self.slider_brightness.setRange(-100, 100)
+        self.slider_brightness.setToolTip(
+            "Яркость: положительные значения осветляют, отрицательные — затемняют."
+        )
         self.slider_contrast = QSlider(Qt.Horizontal)
         self.slider_contrast.setRange(20, 300)
+        self.slider_contrast.setToolTip(
+            "Контрастность: значения выше 1.00 усиливают различие между светлыми и тёмными областями."
+        )
         self.slider_sharpness = QSlider(Qt.Horizontal)
         self.slider_sharpness.setRange(0, 300)
-
+        self.slider_sharpness.setToolTip(
+            "Резкость: повышает чёткость границ ядер. Не рекомендуется превышать значение 1.5."
+        )
         sat, bri, con, sha = enhancement_to_slider_values(self.enhancement_params)
         self.slider_saturation.setValue(sat)
         self.slider_brightness.setValue(bri)
         self.slider_contrast.setValue(con)
         self.slider_sharpness.setValue(sha)
-
         self.lbl_saturation = QLabel()
         self.lbl_brightness = QLabel()
         self.lbl_contrast = QLabel()
         self.lbl_sharpness = QLabel()
         self._update_enhancement_labels()
+        enh_form = QFormLayout()
+        enh_form.setSpacing(4)
+        enh_form.setContentsMargins(0, 0, 0, 0)
+        for slider, lbl, name in [
+            (self.slider_saturation, self.lbl_saturation, "Насыщенность:"),
+            (self.slider_brightness, self.lbl_brightness, "Яркость:"),
+            (self.slider_contrast, self.lbl_contrast, "Контраст:"),
+            (self.slider_sharpness, self.lbl_sharpness, "Резкость:"),
+        ]:
+            row_w = QHBoxLayout()
+            row_w.addWidget(slider, 1)
+            row_w.addWidget(lbl)
+            enh_form.addRow(name, row_w)
+        c3.addLayout(enh_form)
+        self.btn_enhance_reset = QPushButton("Сбросить")
+        self.btn_enhance_reset.setMinimumHeight(32)
+        self.btn_enhance_reset.setToolTip(
+            "Вернуть настройки цветокоррекции к исходным значениям по умолчанию."
+        )
+        c3.addWidget(self.btn_enhance_reset)
+        left_layout.addWidget(step3)
 
-        sat_row = QHBoxLayout()
-        sat_row.addWidget(self.slider_saturation, 1)
-        sat_row.addWidget(self.lbl_saturation)
-        enhance_layout.addRow("Цветность:", sat_row)
+        # Step 4 — Detection
+        step4, c4 = self._make_step_widget(
+            "4", "Детекция ядер", "Нейросеть найдёт ядра автоматически"
+        )
+        self.btn_detect = QPushButton("Запустить детекцию")
+        self.btn_detect.setMinimumHeight(52)
+        self.btn_detect.setObjectName("btn_detect")
+        self.btn_detect.setToolTip(
+            "Нейросеть StarDist проанализирует снимок и отметит все клеточные ядра. "
+            "Процесс может занять несколько минут для больших изображений."
+        )
+        self.lbl_nuclei_count = QLabel("")
+        self.lbl_nuclei_count.setObjectName("nuclei_count_inline")
+        c4.addWidget(self.btn_detect)
+        c4.addWidget(self.lbl_nuclei_count)
+        left_layout.addWidget(step4)
 
-        bri_row = QHBoxLayout()
-        bri_row.addWidget(self.slider_brightness, 1)
-        bri_row.addWidget(self.lbl_brightness)
-        enhance_layout.addRow("Яркость:", bri_row)
+        # Step 5 — Export (visual marker; export button is in the right panel)
+        step5, c5 = self._make_step_widget(
+            "5", "Экспорт результатов", "Сохраните данные в файл"
+        )
+        lbl_export_hint = QLabel(
+            "Кнопка «Экспортировать» расположена\nв правой панели результатов."
+        )
+        lbl_export_hint.setObjectName("step_status")
+        lbl_export_hint.setWordWrap(True)
+        c5.addWidget(lbl_export_hint)
+        left_layout.addWidget(step5)
 
-        con_row = QHBoxLayout()
-        con_row.addWidget(self.slider_contrast, 1)
-        con_row.addWidget(self.lbl_contrast)
-        enhance_layout.addRow("Контрастность:", con_row)
+        # Technical settings section
+        sep_tech = QFrame()
+        sep_tech.setFrameShape(QFrame.HLine)
+        sep_tech.setObjectName("tech_sep")
+        left_layout.addSpacing(6)
+        left_layout.addWidget(sep_tech)
+        lbl_tech = QLabel("Дополнительные настройки")
+        lbl_tech.setObjectName("tech_label")
+        left_layout.addWidget(lbl_tech)
 
-        sha_row = QHBoxLayout()
-        sha_row.addWidget(self.slider_sharpness, 1)
-        sha_row.addWidget(self.lbl_sharpness)
-        enhance_layout.addRow("Резкость:", sha_row)
-
-        self.btn_enhance_reset = QPushButton("Сбросить цветокоррекцию")
-        enhance_layout.addRow(self.btn_enhance_reset)
-
-        left_layout.addWidget(enhance_group)
-        left_layout.addSpacing(12)
-        left_layout.addWidget(self.btn_rect)
-        left_layout.addWidget(self.btn_poly)
-        left_layout.addWidget(self.btn_line)
-        left_layout.addWidget(self.btn_zoom_in_main)
-        left_layout.addWidget(self.btn_zoom_out_main)
-        left_layout.addWidget(self.btn_zoom_100_main)
+        self.btn_detection_params = QPushButton("Параметры нейросети")
+        self.btn_detection_params.setMinimumHeight(36)
+        self.btn_detection_params.setToolTip(
+            "Тонкая настройка параметров StarDist: порог уверенности, "
+            "разделение соседних ядер, нормализация цвета и другие параметры."
+        )
+        self.btn_batch = QPushButton("Пакетная обработка")
+        self.btn_batch.setMinimumHeight(36)
+        self.btn_batch.setToolTip(
+            "Обработать сразу несколько снимков из одной папки "
+            "и сохранить сводный отчёт в файл."
+        )
+        left_layout.addWidget(self.btn_detection_params)
+        left_layout.addWidget(self.btn_batch)
         left_layout.addStretch(1)
 
-        left.setFixedWidth(320)
+        # Hidden legacy buttons (kept for signal compatibility)
+        self.btn_load_model = QPushButton()
+        self.btn_reset_model = QPushButton()
 
-        # Center image area
+        left_scroll.setWidget(left)
+
+        left_vsep = QFrame()
+        left_vsep.setFrameShape(QFrame.VLine)
+        left_vsep.setObjectName("panel_vsep")
+        body_layout.addWidget(left_scroll)
+        body_layout.addWidget(left_vsep)
+
+        # ── Center: toolbar + canvas ─────────────────────────────────────
+        center_w = QWidget()
+        center_layout = QVBoxLayout(center_w)
+        center_layout.setContentsMargins(0, 0, 0, 0)
+        center_layout.setSpacing(0)
+
+        toolbar_w = QWidget()
+        toolbar_w.setObjectName("canvas_toolbar")
+        toolbar_w.setFixedHeight(40)
+        toolbar_layout = QHBoxLayout(toolbar_w)
+        toolbar_layout.setContentsMargins(8, 4, 8, 4)
+        toolbar_layout.setSpacing(4)
+
+        lbl_roi_t = QLabel("ROI:")
+        lbl_roi_t.setObjectName("toolbar_label")
+        toolbar_layout.addWidget(lbl_roi_t)
+
+        self.btn_rect = QPushButton("Прямоугольник")
+        self.btn_rect.setCheckable(True)
+        self.btn_rect.setFixedHeight(30)
+        self.btn_rect.setToolTip(
+            "Нарисовать прямоугольную область интереса на снимке. "
+            "Удерживайте и тяните левую кнопку мыши."
+        )
+        self.btn_poly = QPushButton("Полигон")
+        self.btn_poly.setCheckable(True)
+        self.btn_poly.setFixedHeight(30)
+        self.btn_poly.setToolTip(
+            "Нарисовать произвольную многоугольную область интереса. "
+            "Кликайте для добавления точек, правая кнопка мыши — завершить."
+        )
+        self.btn_line = QPushButton("Линия")
+        self.btn_line.setCheckable(True)
+        self.btn_line.setFixedHeight(30)
+        self.btn_line.setToolTip(
+            "Провести линию на снимке для быстрой калибровки масштаба."
+        )
+        self.tool_group = QButtonGroup(self)
+        self.tool_group.setExclusive(True)
+        self.tool_group.addButton(self.btn_rect)
+        self.tool_group.addButton(self.btn_poly)
+        self.tool_group.addButton(self.btn_line)
+        toolbar_layout.addWidget(self.btn_rect)
+        toolbar_layout.addWidget(self.btn_poly)
+        toolbar_layout.addWidget(self.btn_line)
+
+        tb_vsep = QFrame()
+        tb_vsep.setFrameShape(QFrame.VLine)
+        tb_vsep.setObjectName("toolbar_sep")
+        toolbar_layout.addWidget(tb_vsep)
+
+        self.btn_zoom_in_main = QPushButton("+")
+        self.btn_zoom_in_main.setFixedSize(30, 30)
+        self.btn_zoom_in_main.setToolTip("Увеличить масштаб просмотра изображения.")
+        self.btn_zoom_out_main = QPushButton("−")
+        self.btn_zoom_out_main.setFixedSize(30, 30)
+        self.btn_zoom_out_main.setToolTip("Уменьшить масштаб просмотра изображения.")
+        self.btn_zoom_100_main = QPushButton("1:1")
+        self.btn_zoom_100_main.setFixedHeight(30)
+        self.btn_zoom_100_main.setToolTip(
+            "Показать изображение в исходном разрешении без масштабирования."
+        )
+        self.btn_zoom_fit_main = QPushButton("По размеру")
+        self.btn_zoom_fit_main.setFixedHeight(30)
+        self.btn_zoom_fit_main.setToolTip(
+            "Вписать изображение целиком в область просмотра."
+        )
+        toolbar_layout.addWidget(self.btn_zoom_in_main)
+        toolbar_layout.addWidget(self.btn_zoom_out_main)
+        toolbar_layout.addWidget(self.btn_zoom_100_main)
+        toolbar_layout.addWidget(self.btn_zoom_fit_main)
+        toolbar_layout.addStretch(1)
+
+        center_layout.addWidget(toolbar_w)
+
         self.scene = ImageScene(self)
         self.view = CalibrationView(self.scene, self)
+        center_layout.addWidget(self.view, 1)
 
-        # Right panel
-        right = QWidget(self)
+        body_layout.addWidget(center_w, 1)
+
+        right_vsep = QFrame()
+        right_vsep.setFrameShape(QFrame.VLine)
+        right_vsep.setObjectName("panel_vsep")
+        body_layout.addWidget(right_vsep)
+
+        # ── Right panel ──────────────────────────────────────────────────
+        right = QWidget()
+        right.setObjectName("right_panel")
         right_layout = QVBoxLayout(right)
-        right_layout.setContentsMargins(8, 8, 8, 8)
+        right_layout.setContentsMargins(12, 12, 12, 12)
         right_layout.setSpacing(8)
+        right.setFixedWidth(380)
+
+        lbl_count_hdr = QLabel("НАЙДЕНО ЯДЕР")
+        lbl_count_hdr.setObjectName("count_header_lbl")
+        self.lbl_nuclei_count_big = QLabel("—")
+        self.lbl_nuclei_count_big.setObjectName("nuclei_count_big")
+        right_layout.addWidget(lbl_count_hdr)
+        right_layout.addWidget(self.lbl_nuclei_count_big)
+
+        sep_rh = QFrame()
+        sep_rh.setFrameShape(QFrame.HLine)
+        sep_rh.setObjectName("right_sep_h")
+        right_layout.addWidget(sep_rh)
+
+        lbl_roi_hdr = QLabel("ОБЛАСТИ ИНТЕРЕСА")
+        lbl_roi_hdr.setObjectName("count_header_lbl")
+        right_layout.addWidget(lbl_roi_hdr)
 
         self.table = QTableWidget(0, 5)
         self.table.setHorizontalHeaderLabels(
@@ -2211,32 +2407,82 @@ class MainWindow(QMainWindow):
         self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        self.table.setAlternatingRowColors(True)
+        right_layout.addWidget(self.table, 1)
 
         self.btn_export = QPushButton("Экспортировать")
-
-        right_layout.addWidget(self.table, 1)
+        self.btn_export.setMinimumHeight(48)
+        self.btn_export.setObjectName("btn_step")
+        self.btn_export.setToolTip(
+            "Сохранить результаты анализа — количество ядер, площадь и плотность "
+            "для каждой области интереса — в файл CSV или Excel."
+        )
         right_layout.addWidget(self.btn_export)
-        right.setFixedWidth(430)
 
-        root_layout.addWidget(left)
-        root_layout.addWidget(self.view, 1)
-        root_layout.addWidget(right)
-
+        body_layout.addWidget(right)
         self.setCentralWidget(central)
 
-        self.scale_label = QLabel("Масштаб: не задан")
-        self.coord_label = QLabel("Курсор: x -, y -")
-        self.proc_label = QLabel("Статус: готово")
-        self.detector_label = QLabel("Детектор: -")
+        # ── Cursor coordinate overlay on canvas ──────────────────────────
+        self.coord_overlay = QLabel("x —   y —", self.view.viewport())
+        self.coord_overlay.setObjectName("coord_overlay")
+        self.coord_overlay.setAttribute(Qt.WA_TransparentForMouseEvents)
+        self.coord_overlay.adjustSize()
+        self.coord_overlay.move(8, 8)
+        self.coord_overlay.show()
+        self.coord_overlay.raise_()
 
-        self.statusBar().addPermanentWidget(self.scale_label)
+        # ── Status bar ────────────────────────────────────────────────────
+        self.coord_label = QLabel("x —   y —")
         self.statusBar().addPermanentWidget(self.coord_label)
-        self.statusBar().addPermanentWidget(self.proc_label)
-        self.statusBar().addPermanentWidget(self.detector_label)
 
+        # ── Keyboard shortcuts ────────────────────────────────────────────
         self.shortcut_undo = QShortcut(QKeySequence("Ctrl+Z"), self)
         self.shortcut_delete = QShortcut(QKeySequence("Delete"), self)
         self.shortcut_escape = QShortcut(QKeySequence("Esc"), self)
+
+    def _make_step_widget(self, number: str, title: str, subtitle: str) -> tuple:
+        """Create a numbered wizard step widget. Returns (container, content_layout)."""
+        container = QWidget()
+        container.setObjectName("step_container")
+        outer = QVBoxLayout(container)
+        outer.setContentsMargins(0, 0, 0, 6)
+        outer.setSpacing(2)
+
+        hdr = QWidget()
+        hdr.setObjectName("step_header")
+        hdr_layout = QHBoxLayout(hdr)
+        hdr_layout.setContentsMargins(8, 5, 8, 5)
+        hdr_layout.setSpacing(10)
+
+        num = QLabel(number)
+        num.setObjectName("step_num")
+        num.setFixedSize(26, 26)
+        num.setAlignment(Qt.AlignCenter)
+
+        titles_w = QWidget()
+        titles_w.setObjectName("step_titles")
+        titles_l = QVBoxLayout(titles_w)
+        titles_l.setContentsMargins(0, 0, 0, 0)
+        titles_l.setSpacing(0)
+        lbl_title = QLabel(title)
+        lbl_title.setObjectName("step_title")
+        lbl_sub = QLabel(subtitle)
+        lbl_sub.setObjectName("step_subtitle")
+        titles_l.addWidget(lbl_title)
+        titles_l.addWidget(lbl_sub)
+
+        hdr_layout.addWidget(num)
+        hdr_layout.addWidget(titles_w, 1)
+        outer.addWidget(hdr)
+
+        content_w = QWidget()
+        content_w.setObjectName("step_content")
+        content_l = QVBoxLayout(content_w)
+        content_l.setContentsMargins(10, 4, 8, 4)
+        content_l.setSpacing(6)
+        outer.addWidget(content_w)
+
+        return container, content_l
 
     def _connect_signals(self) -> None:
         self.btn_open.clicked.connect(self.open_image)
@@ -2254,6 +2500,7 @@ class MainWindow(QMainWindow):
         self.btn_zoom_in_main.clicked.connect(self.view.zoom_in)
         self.btn_zoom_out_main.clicked.connect(self.view.zoom_out)
         self.btn_zoom_100_main.clicked.connect(self.view.zoom_100)
+        self.btn_zoom_fit_main.clicked.connect(self.view.zoom_fit)
 
         self.scene.roi_created.connect(self._on_roi_created)
         self.scene.line_created.connect(self._on_line_created)
@@ -2269,44 +2516,347 @@ class MainWindow(QMainWindow):
         self.slider_sharpness.valueChanged.connect(self._on_enhancement_changed)
         self.btn_enhance_reset.clicked.connect(self.reset_enhancement_settings)
 
-    def _apply_dark_theme(self) -> None:
+    def _apply_light_theme(self) -> None:
         self.setStyleSheet(
             """
             QWidget {
-                background-color: #1e1f22;
-                color: #e6e6e6;
-                font-size: 12px;
+                background-color: #F5F3EF;
+                color: #2C2C2C;
+                font-size: 13px;
             }
-            QPushButton {
-                background-color: #2d3138;
-                border: 1px solid #3c424d;
+            /* Header bar */
+            QWidget#header_bar {
+                background-color: #EDEAE2;
+                border-bottom: 1px solid #C8C4BC;
+            }
+            QLabel#app_title {
+                font-size: 15px;
+                font-weight: bold;
+                color: #1A365D;
+            }
+            QLabel#header_proc {
+                font-size: 12px;
+                color: #4A5568;
+                padding: 0 8px;
+            }
+            QLabel#header_det {
+                font-size: 11px;
+                color: #718096;
+                padding: 0 4px;
+            }
+            /* Left scroll area */
+            QScrollArea#left_scroll {
+                border: none;
+                border-right: 1px solid #C8C4BC;
+                background-color: #EFEDE6;
+            }
+            QWidget#left_panel {
+                background-color: #EFEDE6;
+            }
+            /* Step widgets */
+            QWidget#step_container {
+                background-color: transparent;
+            }
+            QWidget#step_header {
+                background-color: #E4E0D6;
+                border-radius: 5px;
+            }
+            QWidget#step_titles {
+                background-color: transparent;
+            }
+            QLabel#step_num {
+                background-color: #2B6CB0;
+                color: white;
+                font-size: 13px;
+                font-weight: bold;
+                border-radius: 13px;
+                min-width: 26px;
+                min-height: 26px;
+            }
+            QLabel#step_title {
+                font-size: 13px;
+                font-weight: bold;
+                color: #1A202C;
+                background-color: transparent;
+            }
+            QLabel#step_subtitle {
+                font-size: 11px;
+                color: #718096;
+                background-color: transparent;
+            }
+            QWidget#step_content {
+                background-color: transparent;
+            }
+            QLabel#step_status {
+                font-size: 11px;
+                color: #4A5568;
+                background-color: transparent;
+            }
+            /* Step action buttons */
+            QPushButton#btn_step {
+                background-color: #EBF4FF;
+                border: 1px solid #BEE3F8;
+                border-radius: 5px;
+                color: #2B6CB0;
+                font-weight: bold;
+                padding: 8px 12px;
+                text-align: left;
+            }
+            QPushButton#btn_step:hover {
+                background-color: #D6EBF9;
+            }
+            QPushButton#btn_step:disabled {
+                color: #A0AEC0;
+                background-color: #EDF2F7;
+                border-color: #E2E8F0;
+            }
+            /* Detect button — primary action */
+            QPushButton#btn_detect {
+                background-color: #2B6CB0;
+                border: none;
                 border-radius: 6px;
-                padding: 7px 10px;
+                color: white;
+                font-size: 14px;
+                font-weight: bold;
+                padding: 10px 16px;
+            }
+            QPushButton#btn_detect:hover {
+                background-color: #2C5282;
+            }
+            QPushButton#btn_detect:disabled {
+                background-color: #A0AEC0;
+            }
+            QLabel#nuclei_count_inline {
+                color: #276749;
+                font-size: 12px;
+                font-weight: bold;
+                background-color: transparent;
+            }
+            /* Technical section */
+            QFrame#tech_sep {
+                color: #C8C4BC;
+            }
+            QLabel#tech_label {
+                font-size: 11px;
+                color: #A0AEC0;
+                background-color: transparent;
+            }
+            /* Generic buttons */
+            QPushButton {
+                background-color: #ECEAE3;
+                border: 1px solid #C8C4BC;
+                border-radius: 5px;
+                color: #2C2C2C;
+                padding: 5px 10px;
+                min-height: 30px;
             }
             QPushButton:hover {
-                background-color: #383d47;
+                background-color: #E0DDD5;
+            }
+            QPushButton:pressed {
+                background-color: #D4D0C8;
             }
             QPushButton:checked {
-                background-color: #0f5a7a;
-                border-color: #58c2ff;
+                background-color: #2B6CB0;
+                color: white;
+                border-color: #2B6CB0;
             }
+            QPushButton:disabled {
+                color: #A0AEC0;
+                background-color: #F0EDE6;
+                border-color: #DDD9D0;
+            }
+            /* Canvas toolbar */
+            QWidget#canvas_toolbar {
+                background-color: #EDEAE2;
+                border-bottom: 1px solid #C8C4BC;
+            }
+            QLabel#toolbar_label {
+                font-size: 11px;
+                color: #718096;
+                background-color: transparent;
+            }
+            QFrame#toolbar_sep {
+                color: #C8C4BC;
+            }
+            /* Panel separators */
+            QFrame#panel_vsep {
+                color: #C8C4BC;
+                max-width: 1px;
+            }
+            /* Graphics view — dark canvas */
             QGraphicsView {
-                border: 1px solid #3c424d;
-                background-color: #121212;
+                border: none;
+                background-color: #1A1A1A;
             }
+            /* Right panel */
+            QWidget#right_panel {
+                background-color: #EFEDE6;
+            }
+            QLabel#count_header_lbl {
+                font-size: 10px;
+                letter-spacing: 1px;
+                color: #A0AEC0;
+                background-color: transparent;
+            }
+            QLabel#nuclei_count_big {
+                font-size: 52px;
+                font-weight: bold;
+                color: #2B6CB0;
+                padding: 4px 0;
+                background-color: transparent;
+            }
+            QFrame#right_sep_h {
+                color: #C8C4BC;
+            }
+            /* Table */
             QTableWidget {
-                gridline-color: #3f4652;
-                background-color: #1a1c20;
-                alternate-background-color: #21252c;
+                gridline-color: #E2DDD4;
+                background-color: #FFFFFF;
+                alternate-background-color: #F7F4EF;
+                border: 1px solid #C8C4BC;
+                border-radius: 4px;
+                font-size: 12px;
             }
             QHeaderView::section {
-                background-color: #2b2f37;
-                color: #f0f0f0;
-                padding: 6px;
+                background-color: #E4E0D6;
+                color: #2C2C2C;
+                padding: 5px;
+                border: none;
+                border-bottom: 1px solid #C8C4BC;
+                font-weight: bold;
+                font-size: 12px;
+            }
+            QTableWidget::item:selected {
+                background-color: #BEE3F8;
+                color: #1A365D;
+            }
+            /* Sliders */
+            QSlider::groove:horizontal {
+                height: 4px;
+                background-color: #C8C4BC;
+                border-radius: 2px;
+            }
+            QSlider::handle:horizontal {
+                background-color: #2B6CB0;
+                width: 14px;
+                height: 14px;
+                margin: -5px 0;
+                border-radius: 7px;
+            }
+            QSlider::sub-page:horizontal {
+                background-color: #90CDF4;
+                border-radius: 2px;
+            }
+            /* Status bar */
+            QStatusBar {
+                background-color: #EDEAE2;
+                border-top: 1px solid #C8C4BC;
+                font-size: 11px;
+                color: #4A5568;
+            }
+            /* Cursor overlay on canvas */
+            QLabel#coord_overlay {
+                background-color: rgba(0, 0, 0, 140);
+                color: white;
+                font-size: 11px;
+                padding: 2px 8px;
+                border-radius: 3px;
+            }
+            /* Scrollbars */
+            QScrollBar:vertical {
+                background: #EFEDE6;
+                width: 8px;
                 border: none;
             }
-            QStatusBar {
-                background: #1a1b1f;
+            QScrollBar::handle:vertical {
+                background: #C8C4BC;
+                border-radius: 4px;
+                min-height: 20px;
+            }
+            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
+                height: 0px;
+            }
+            QScrollBar:horizontal {
+                height: 8px;
+                background: #EFEDE6;
+                border: none;
+            }
+            QScrollBar::handle:horizontal {
+                background: #C8C4BC;
+                border-radius: 4px;
+            }
+            QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {
+                width: 0px;
+            }
+            /* GroupBox (dialogs) */
+            QGroupBox {
+                border: 1px solid #C8C4BC;
+                border-radius: 5px;
+                margin-top: 8px;
+                padding-top: 6px;
+                font-weight: bold;
+            }
+            QGroupBox::title {
+                subcontrol-origin: margin;
+                left: 8px;
+                color: #4A5568;
+            }
+            /* ComboBox */
+            QComboBox {
+                border: 1px solid #C8C4BC;
+                border-radius: 4px;
+                padding: 4px 8px;
+                background-color: #FFFFFF;
+            }
+            QComboBox::drop-down {
+                border: none;
+            }
+            QComboBox QAbstractItemView {
+                background-color: #FFFFFF;
+                border: 1px solid #C8C4BC;
+                selection-background-color: #BEE3F8;
+            }
+            /* SpinBox */
+            QDoubleSpinBox, QSpinBox {
+                border: 1px solid #C8C4BC;
+                border-radius: 4px;
+                padding: 3px 6px;
+                background-color: #FFFFFF;
+            }
+            /* LineEdit */
+            QLineEdit {
+                border: 1px solid #C8C4BC;
+                border-radius: 4px;
+                padding: 4px 8px;
+                background-color: #FFFFFF;
+            }
+            /* CheckBox */
+            QCheckBox::indicator {
+                width: 16px;
+                height: 16px;
+                border: 1px solid #C8C4BC;
+                border-radius: 3px;
+                background-color: white;
+            }
+            QCheckBox::indicator:checked {
+                background-color: #2B6CB0;
+                border-color: #2B6CB0;
+            }
+            /* ToolButton */
+            QToolButton {
+                background-color: #ECEAE3;
+                border: 1px solid #C8C4BC;
+                border-radius: 4px;
+                padding: 3px;
+            }
+            QToolButton:hover {
+                background-color: #E0DDD5;
+            }
+            /* Dialog buttons */
+            QDialogButtonBox QPushButton {
+                min-width: 80px;
+                min-height: 32px;
             }
             """
         )
@@ -2563,9 +3113,6 @@ class MainWindow(QMainWindow):
         self.proc_label.setText("Статус: параметры детекции обновлены")
 
     def open_image(self) -> None:
-        if not self._ensure_scale_ready():
-            return
-
         path, _ = QFileDialog.getOpenFileName(
             self,
             "Открыть изображение",
@@ -2664,9 +3211,6 @@ class MainWindow(QMainWindow):
                 "Сначала дождитесь завершения текущей детекции",
             )
             return
-        if not self._ensure_scale_ready():
-            return
-
         setup_dialog = BatchSetupDialog(self)
         if setup_dialog.exec_() != QDialog.Accepted:
             return
@@ -2835,7 +3379,11 @@ class MainWindow(QMainWindow):
     def _on_cursor_moved(self, x: float, y: float) -> None:
         ox = x * self.display_scale
         oy = y * self.display_scale
-        self.coord_label.setText(f"Курсор: x {ox:.1f}, y {oy:.1f}")
+        text = f"x {ox:.0f}   y {oy:.0f}"
+        self.coord_label.setText(text)
+        if hasattr(self, "coord_overlay"):
+            self.coord_overlay.setText(text)
+            self.coord_overlay.adjustSize()
 
     def _on_roi_created(self, payload: dict) -> None:
         if not self.image_path:
@@ -2903,8 +3451,6 @@ class MainWindow(QMainWindow):
     def detect_nuclei(self) -> None:
         if not self.image_path:
             QMessageBox.warning(self, "Нет изображения", "Сначала откройте изображение")
-            return
-        if not self._ensure_scale_ready():
             return
         if self._batch_thread is not None:
             QMessageBox.information(
@@ -3048,6 +3594,13 @@ class MainWindow(QMainWindow):
                 "Калибровка не задана: площадь и плотность в мм² не рассчитаны", 4000
             )
 
+        count = len(self.nuclei)
+        count_text = str(count) if count else "—"
+        if hasattr(self, "lbl_nuclei_count"):
+            self.lbl_nuclei_count.setText(f"Найдено: {count}" if count else "")
+        if hasattr(self, "lbl_nuclei_count_big"):
+            self.lbl_nuclei_count_big.setText(count_text)
+
     def export_results(self) -> None:
         if not self.metrics_rows:
             QMessageBox.warning(self, "Нет данных", "Нет ROI для экспорта")
@@ -3128,6 +3681,19 @@ class MainWindow(QMainWindow):
             f"| раздел. {params['nms_thresh']:.2f} | upscale x{upscale:.2f} "
             f"| {norm_mark} | режим: {mode_ru}"
         )
+
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        self._position_coord_overlay()
+
+    def _position_coord_overlay(self) -> None:
+        if not hasattr(self, "coord_overlay") or not hasattr(self, "view"):
+            return
+        vp = self.view.viewport()
+        self.coord_overlay.adjustSize()
+        self.coord_overlay.move(8, vp.height() - self.coord_overlay.height() - 8)
+        self.coord_overlay.raise_()
 
 
 def create_app() -> tuple[QApplication, MainWindow]:
